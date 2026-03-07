@@ -1,0 +1,11 @@
+/home/eyalka/p/c/ek-mikroKernellib/build/CMakeFiles/stage1.dir
+/home/eyalka/p/c/ek-mikroKernellib/build/CMakeFiles/stage2.dir
+/home/eyalka/p/c/ek-mikroKernellib/build/CMakeFiles/kernel.dir
+/home/eyalka/p/c/ek-mikroKernellib/build/CMakeFiles/stage2_size_reminder.dir
+/home/eyalka/p/c/ek-mikroKernellib/build/CMakeFiles/disk.dir
+/home/eyalka/p/c/ek-mikroKernellib/build/CMakeFiles/run.dir
+/home/eyalka/p/c/ek-mikroKernellib/build/CMakeFiles/run-debug.dir
+/home/eyalka/p/c/ek-mikroKernellib/build/CMakeFiles/kernel_ide.dir
+/home/eyalka/p/c/ek-mikroKernellib/build/CMakeFiles/bootldr_ide.dir
+/home/eyalka/p/c/ek-mikroKernellib/build/CMakeFiles/edit_cache.dir
+/home/eyalka/p/c/ek-mikroKernellib/build/CMakeFiles/rebuild_cache.dir

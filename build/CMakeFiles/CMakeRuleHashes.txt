@@ -1,0 +1,18 @@
+# Hashes of file build rules.
+2aa5506c97b2cb0eeafeeb96a42b677a CMakeFiles/disk
+2aa5506c97b2cb0eeafeeb96a42b677a CMakeFiles/kernel
+aecb15e646970a64c7306c81886d5b18 CMakeFiles/run
+4082d8cdc91dee57da5883a9051be7af CMakeFiles/run-debug
+2aa5506c97b2cb0eeafeeb96a42b677a CMakeFiles/stage1
+2aa5506c97b2cb0eeafeeb96a42b677a CMakeFiles/stage2
+8642fddfdec5568b1318e0d34a2e022d CMakeFiles/stage2_size_reminder
+6473a3aff49f901f6098a5742354922d disk.img
+d0040311a8483370b0ef58f30db79919 ekInitKernellib.o
+336626715f9a35c581d05c8c89014a3c idt.o
+0f72e7fc79e899f8eb9d8da422691ae4 idt_common.o
+a8bb075b9ba1f4f7879292e4aa03f40f isr_dispatch.o
+6960a2875c9471ea509032dc2ecb8a5d kernel.bin
+d3e201d494d4b5f4e930edaaa3601091 phys_kmalloc.o
+c38f523524557e35ef83711d109ec498 stage1.bin
+1b8b4d96e8b2cfef8c738fbc3cbbff73 stage2.bin
+0b0ca3cc66b4949427f5ae742598d11b vga-graphics.o

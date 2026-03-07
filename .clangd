@@ -1,0 +1,22 @@
+# .clangd — clangd LSP configuration for ek-mikroKernellib
+#
+# Tells clangd this is a freestanding (bare-metal) x86-64 environment so it
+# does not flag missing system headers or make standard-library assumptions.
+
+CompileFlags:
+  Add:
+    - "--target=x86_64-unknown-elf"   # bare-metal ELF target
+    - "-ffreestanding"
+    - "-fno-builtin"
+    - "-mno-red-zone"
+    - "-m64"
+    # GCC freestanding headers (stdint.h, stddef.h, …) are injected via
+    # compile_commands.json by CMakeLists.txt — no need to duplicate here.
+  Remove:
+    # Strip flags that clangd or the host clang front-end may not understand
+    - "-march=*"
+    - "-mabi=*"
+
+Diagnostics:
+  UnusedIncludes: Strict
+  MissingIncludes: None   # expected in a freestanding environment
