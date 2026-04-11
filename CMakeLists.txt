@@ -37,6 +37,7 @@ find_program(CROSS_CC   NAMES x86_64-elf-gcc  gcc    REQUIRED DOC "C compiler")
 find_program(CROSS_CXX  NAMES x86_64-elf-g++  g++    REQUIRED DOC "C++ compiler")
 find_program(CROSS_LD   NAMES x86_64-elf-ld   ld     REQUIRED DOC "Linker")
 
+find_program(CROSS_OBJCOPY NAMES x86_64-elf-objcopy objcopy REQUIRED DOC "objcopy for ELF→binary strip")
 find_program(QEMU qemu-system-x86_64 DOC "QEMU x86_64 emulator")
 
 message(STATUS "NASM  : ${NASM}")
@@ -75,7 +76,8 @@ set(KERNEL_CFLAGS
     -nostdlib
     -nostdinc
     "-isystem${_gcc_inc}"
-    -O2
+    -g
+    -O0
     -Wall
     -Wextra
 )
@@ -101,6 +103,21 @@ add_custom_command(
 )
 add_custom_target(stage1 DEPENDS ${STAGE1_BIN})
 
+# ─── VBE resolution ───────────────────────────────────────────────────────────
+#
+# Set these to the display resolution your target machine supports.
+# QEMU advertises 2560x1440; real hardware often tops out at 1920x1080 or lower.
+# Change with:  cmake -DVESA_WIDTH=1920 -DVESA_HEIGHT=1080 -B build
+
+set(VESA_WIDTH  2560 CACHE STRING "VBE framebuffer width  the bootloader will request from BIOS")
+set(VESA_HEIGHT 1440 CACHE STRING "VBE framebuffer height the bootloader will request from BIOS")
+
+message(STATUS "──────────────────────────────────────────────────────────")
+message(STATUS "  Bootloader VBE resolution : ${VESA_WIDTH} x ${VESA_HEIGHT}")
+message(STATUS "  (QEMU default is 2560x1440 — real hardware often needs")
+message(STATUS "   1920x1080 or lower. Override with -DVESA_WIDTH=W -DVESA_HEIGHT=H)")
+message(STATUS "──────────────────────────────────────────────────────────")
+
 # ─── Stage 2 bootloader ───────────────────────────────────────────────────────
 
 set(STAGE2_SRC ${CMAKE_SOURCE_DIR}/src/Bootldr/mikroBootldr-stg2-x86.asm)
@@ -108,9 +125,12 @@ set(STAGE2_BIN ${CMAKE_BINARY_DIR}/stage2.bin)
 
 add_custom_command(
     OUTPUT  ${STAGE2_BIN}
-    COMMAND ${NASM} -f bin -o ${STAGE2_BIN} ${STAGE2_SRC}
+    COMMAND ${NASM} -f bin
+                    -DVESA_WIDTH=${VESA_WIDTH}
+                    -DVESA_HEIGHT=${VESA_HEIGHT}
+                    -o ${STAGE2_BIN} ${STAGE2_SRC}
     DEPENDS ${STAGE2_SRC}
-    COMMENT "[NASM] mikroBootldr-stg2-x86.asm → stage2.bin"
+    COMMENT "[NASM] mikroBootldr-stg2-x86.asm → stage2.bin  (${VESA_WIDTH}x${VESA_HEIGHT})"
     VERBATIM
 )
 add_custom_target(stage2 DEPENDS ${STAGE2_BIN})
@@ -118,6 +138,7 @@ add_custom_target(stage2 DEPENDS ${STAGE2_BIN})
 # ─── Kernel ───────────────────────────────────────────────────────────────────
 
 set(KERNEL_LD   ${CMAKE_SOURCE_DIR}/cmake/kernel.ld)
+set(KERNEL_ELF  ${CMAKE_BINARY_DIR}/kernel.elf)
 set(KERNEL_BIN  ${CMAKE_BINARY_DIR}/kernel.bin)
 set(KERNEL_SRCDIR ${CMAKE_SOURCE_DIR}/src/mikroKernellib)
 
@@ -125,12 +146,18 @@ set(KERNEL_CSRCS
     ${KERNEL_SRCDIR}/ekInitKernellib.c
     ${KERNEL_SRCDIR}/idt.c
     ${KERNEL_SRCDIR}/isr_dispatch.c
-    ${KERNEL_SRCDIR}/vga-graphics.c
     ${KERNEL_SRCDIR}/phys_kmalloc.c
+    ${KERNEL_SRCDIR}/kmath.c
+    ${KERNEL_SRCDIR}/kstrings.c
+    ${KERNEL_SRCDIR}/mmu_page_tables.c
+    ${KERNEL_SRCDIR}/vesa_graphics_lib.c
 )
 
 set(KERNEL_ASMSRCS
     ${KERNEL_SRCDIR}/idt_common.asm
+    ${KERNEL_SRCDIR}/spinlocks.asm
+    ${KERNEL_SRCDIR}/mmu_paging_x86.asm
+    ${KERNEL_SRCDIR}/nasm_font.asm
 )
 
 # Compile each C source to its own .o
@@ -140,7 +167,7 @@ foreach(_src ${KERNEL_CSRCS})
     set(_obj ${CMAKE_BINARY_DIR}/${_name}.o)
     add_custom_command(
         OUTPUT  ${_obj}
-        COMMAND ${CROSS_CC} ${KERNEL_CFLAGS} -I${KERNEL_SRCDIR} -c ${_src} -o ${_obj}
+        COMMAND ${CROSS_CC} ${KERNEL_CFLAGS} -I${CMAKE_SOURCE_DIR} -c ${_src} -o ${_obj}
         DEPENDS ${_src}
         COMMENT "[CC]   ${_name}.c → ${_name}.o"
         VERBATIM
@@ -154,7 +181,7 @@ foreach(_src ${KERNEL_ASMSRCS})
     set(_obj ${CMAKE_BINARY_DIR}/${_name}.o)
     add_custom_command(
         OUTPUT  ${_obj}
-        COMMAND ${NASM} -f elf64 -o ${_obj} ${_src}
+        COMMAND ${NASM} -f elf64 -I${KERNEL_SRCDIR}/ -o ${_obj} ${_src}
         DEPENDS ${_src}
         COMMENT "[NASM] ${_name}.asm → ${_name}.o"
         VERBATIM
@@ -163,10 +190,18 @@ foreach(_src ${KERNEL_ASMSRCS})
 endforeach()
 
 add_custom_command(
-    OUTPUT  ${KERNEL_BIN}
-    COMMAND ${CROSS_LD} -T ${KERNEL_LD} ${KERNEL_OBJS} -o ${KERNEL_BIN}
+    OUTPUT  ${KERNEL_ELF}
+    COMMAND ${CROSS_LD} -T ${KERNEL_LD} ${KERNEL_OBJS} -o ${KERNEL_ELF}
     DEPENDS ${KERNEL_OBJS} ${KERNEL_LD}
-    COMMENT "[LD]   kernel.bin"
+    COMMENT "[LD]   kernel.elf"
+    VERBATIM
+)
+
+add_custom_command(
+    OUTPUT  ${KERNEL_BIN}
+    COMMAND ${CROSS_OBJCOPY} -O binary ${KERNEL_ELF} ${KERNEL_BIN}
+    DEPENDS ${KERNEL_ELF}
+    COMMENT "[OBJCOPY] kernel.elf → kernel.bin"
     VERBATIM
 )
 add_custom_target(kernel DEPENDS ${KERNEL_BIN})
@@ -244,12 +279,15 @@ add_library(kernel_ide OBJECT EXCLUDE_FROM_ALL
     src/mikroKernellib/ekInitKernellib.c
     src/mikroKernellib/idt.c
     src/mikroKernellib/isr_dispatch.c
-    src/mikroKernellib/vga-graphics.c
     src/mikroKernellib/phys_kmalloc.c
+    src/mikroKernellib/kmath.c
+    src/mikroKernellib/kstrings.c
+    src/mikroKernellib/mmu_page_tables.c
+    src/mikroKernellib/vesa_graphics_lib.c
 )
 target_compile_options(kernel_ide PRIVATE ${KERNEL_CFLAGS})
 target_include_directories(kernel_ide PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/mikroKernellib
+    ${CMAKE_SOURCE_DIR}
 )
 
 set_target_properties(kernel_ide PROPERTIES
@@ -259,10 +297,13 @@ set_target_properties(kernel_ide PROPERTIES
     CXX_STANDARD_REQUIRED ON
 )
 
-# Bootloader ASM sources (file listing only — no compilation)
+# ASM sources (file listing only — no compilation)
 add_custom_target(bootldr_ide
     SOURCES
         src/Bootldr/mikroBootldr-stg1-x86.asm
         src/Bootldr/mikroBootldr-stg2-x86.asm
         src/mikroKernellib/idt_common.asm
+        src/mikroKernellib/spinlocks.asm
+        src/mikroKernellib/mmu_paging_x86.asm
+        src/mikroKernellib/nasm_font.asm
 )

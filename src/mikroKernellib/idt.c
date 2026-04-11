@@ -1,21 +1,5 @@
 #include "include/idt.h"
-
-typedef struct {
-    uint16_t limit;
-    uint64_t base;
-} __attribute__((packed)) idtr_t;
-
-
-typedef struct {
-    uint16_t offset_low;
-    uint16_t selector;
-    uint8_t  zero;
-    uint8_t  type_attr;
-    uint16_t offset_mid;
-    uint32_t offset_high;
-    uint32_t zero2;
-} __attribute__((packed)) IDT_gate_descriptor_64bit;
-
+#include "include/mmu_page_tables.h"
 
 extern void isr0(void),  isr1(void),  isr2(void),  isr3(void),
             isr4(void),  isr5(void),  isr6(void),  isr7(void),
@@ -35,14 +19,16 @@ static void (*const isr_stubs[32])(void) = {
     isr24, isr25, isr26, isr27, isr28, isr29, isr30, isr31,
 };
 
-
 //IDT structure statically allocated in .bss section
 static IDT_gate_descriptor_64bit idt[256] __attribute__((aligned(16)));
 
 static idtr_t idtr;
 
+static inline void outb(uint16_t port, uint8_t  v) {
+    __asm__ volatile("outb %0,%1"::"a"(v),"Nd"(port));
+}
 
-void idt_init(void) {
+void __init_idt(void) {
     idtr.limit = sizeof(idt) - 1;
     idtr.base  = (uint64_t)idt;
 
@@ -54,14 +40,20 @@ void idt_init(void) {
     for (int i = 4; i < 32; i++) {
         idt_set_gate(i, (uint64_t)isr_stubs[i], 0x08, 0x8e);
     }
-// entries 0-31 filled
+    // entries 0-31 filled
+
+    // remap legacy irqs to above entry 31
+    outb(0x20, 0x11); outb(0xA0, 0x11);
+    outb(0x21, 0x20); outb(0xA1, 0x28);
+    outb(0x21, 0x04); outb(0xA1, 0x02);
+    outb(0x21, 0x01); outb(0xA1, 0x01);
+    outb(0x21, 0xFF); outb(0xA1, 0xFF); // mask all IRQs
 
     idt_load(&idtr);
 }
 
-
 // example: idt_set_gate(i, isr0, 0x08, 0x8e);
-void idt_set_gate(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags) {
+void idt_set_gate(const uint8_t num, const uint64_t base, const uint16_t sel, const uint8_t flags) {
     idt[num].offset_low  = base & 0xFFFF;
     idt[num].selector    = sel;
     idt[num].zero        = 0x00;
@@ -69,4 +61,18 @@ void idt_set_gate(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags) {
     idt[num].offset_mid  = (base >> 16) & 0xFFFF;
     idt[num].offset_high = (base >> 32) & 0xFFFFFFFF;
     idt[num].zero2       = 0x00000000;
+}
+
+void __reload_idt_virtual(void) {
+    // Translate physical idt[] address to its kernel virtual mapping
+    idtr.base = (uint64_t)KERNEL_BASED_PHYS_TO_VIRT(idt);
+                                                                                               
+    // Re-install all gates with virtual handler addresses
+    for (int i = 0; i < 32; i++) {
+        uint64_t virt_handler = (uint64_t)KERNEL_BASED_PHYS_TO_VIRT(isr_stubs[i]);                                             
+        idt_set_gate(i, virt_handler, 0x08,             
+            (i == 3) ? 0x8f : 0x8e);
+    }
+
+    idt_load(&idtr);
 }

@@ -1,0 +1,9 @@
+# Build artifacts
+build/
+
+# Cache and debug
+.cache/
+.gdb_history
+
+# Claude Code local settings
+.claude/settings.local.json

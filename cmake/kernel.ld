@@ -1,6 +1,6 @@
 /* kernel.ld */
-   OUTPUT_FORMAT(binary)
-   ENTRY(Init_Kernellib)
+   /*OUTPUT_FORMAT(binary)*/
+   ENTRY(__init_kernellib)
 
    /* Bootloader-populated data at fixed physical addresses */
    mmap_entry_count = 0x7000;
@@ -9,16 +9,24 @@
    SECTIONS {
        . = 0x13000;
 
+        _kernel_start = .;
+
        .text : {
            *(.text.entry)
            *(.text)
        }
+       . = ALIGN(4096);
+        _text_end = .;
 
+        _rodata_start = .;
        .rodata : {
            *(.rodata)
            *(.rodata.*)
        }
+       . = ALIGN(4096);
+       _rodata_end = .;
 
+        _data_start = .;
        .data : {
            *(.data)
            *(.data.rel.ro*)
@@ -26,10 +34,12 @@
            *(.got*)
        }
 
+        _bss_start = .;
        .bss : {
            *(.bss)
        }
 
+        . = ALIGN(4096);
        _kernel_end = .;
 
        /DISCARD/ : {

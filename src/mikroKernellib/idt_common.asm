@@ -3,7 +3,8 @@
 
 section .text
 
-
+global mov_rax_cr2
+global pf_debug
 global idt_load
 global isr0, isr1, isr2, isr3, isr4, isr5, isr6, isr7
 global isr8, isr9, isr10, isr11, isr12, isr13, isr14, isr15
@@ -12,15 +13,15 @@ global isr24, isr25, isr26, isr27, isr28, isr29, isr30, isr31
 
 extern isr_dispatch
 
-
 idt_load:
-
     lidt [rdi]
     ret
 
+mov_rax_cr2:
+    mov rax, cr2
+    ret
 
 isr_common_handler:
-
     push rax
     push rbx
     push rcx
@@ -59,7 +60,6 @@ isr_common_handler:
 
     add rsp, 16
     iretq
-
 
 ; No CPU error code — push dummy 0, then vector
 isr0:               ; #DE  Divide Error
@@ -151,7 +151,6 @@ isr14:              ; #PF  Page Fault
 
     push 0x0E
     jmp isr_common_handler
-
 
 ; No CPU error code
 isr15:              ; Reserved

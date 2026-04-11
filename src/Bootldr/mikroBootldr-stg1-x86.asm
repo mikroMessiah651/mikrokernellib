@@ -29,7 +29,6 @@ section .text
 	mov al, 0x03
 	int 0x10
 
-
 	mov byte [BootDrive], dl ; store boot drive number in 0x7dfa
 	mov ah, 0x41
 	mov al, 0x00
@@ -53,9 +52,9 @@ section .text
 	mov ah, 0x42
 	mov al, 0x00
 	mov byte dl, [BootDrive]
-	
+
 	mov si, disk_address_packet
-	
+
 	int 0x13
 	jc .disk_error
 	; by now we loaded stage 2 to ES:BX = 0000:7E00
@@ -85,7 +84,7 @@ section .text
 	mov ax, 1 ; AX = LBA number
 	div byte [SectorPerTrack]
 	inc ah
-	mov [Sector], ah 
+	mov [Sector], ah
 	; Sector = remainder(LBA / SPT)
 	; al = qoutient(LBA / SPT)
 	; calculate Head and Cylinder
@@ -93,7 +92,7 @@ section .text
 	div byte [TotalHeads]
 	mov byte [Head], ah ;ah = remainder(qoutient(lba / spt) / totalheads)
 	mov byte [Cylinder], al
-	
+
 .chs_load_stage2:
 	; CHS geometry must be specified in memory
 
@@ -114,7 +113,7 @@ section .text
 	; we need to read the size of our stage 2
 
 	mov ah, 0x02
-	int 0x13 
+	int 0x13
 	; load sectors of stage 2 bootloader at es:bx = 0000:7e00
 
 	jc .disk_error

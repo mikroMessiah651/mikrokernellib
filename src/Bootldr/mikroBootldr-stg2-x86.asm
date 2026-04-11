@@ -23,7 +23,7 @@ section .text
 .start:
 
     xor ax, ax
-    mov ds, ax  ; DS inherited from stage1 as 0x07C0 — reset to 0 so [label] = physical label VMA
+    mov ds, ax ; DS inherited from stage1 as 0x07C0 — reset to 0 so [label] = physical label VMA
     mov es, ax
 
     mov word [DefaultGeometryFlag], di ; if 0xEFFE -> boot with default geometry and CHS error
@@ -31,8 +31,8 @@ section .text
     mov byte [LoadMode], dh ; 1 if CHS else LBA
 
     ; load kernel sectors from disk using int 0x13 or LBA
-    cmp dh, 1
-    jne .load_kernel_LBA
+    cmp  dh, 1
+    jne  .load_kernel_LBA
 
 .load_kernel_CHS:
 
@@ -47,11 +47,11 @@ section .text
     mov byte dl, [BootDrive]
 
     mov al, 0x0D ; 13 sectors (stays within track 0 from CHS sector 6 to 18)
-    
+
     mov ah, 0x02
 	int 0x13
     ; executes the int 0x13
-    
+
     jmp .load_mmap_BIOS
 
 .load_kernel_LBA:
@@ -80,9 +80,9 @@ section .text
 
 
 .load_mmap_BIOS:
-    ; load memory map from BIOS    
+    ; load memory map from BIOS
     xor ax, ax
-    mov ds, ax 
+    mov ds, ax
     mov es, ax
     mov di, 0x5000
     ; sets buffer to 0x0000:0x5000
@@ -96,22 +96,22 @@ section .text
     mov eax, 0xE820
     mov ecx, 24         ; 24 bytes
     int 0x15
-    
-    jc .e820_done       
-    
+
+    jc .e820_done
+
     cmp eax, 0x534D4150
     jne .e820_done
-    
+
     test ebx, ebx       ; EBX = 0 means last entry
     jz .e820_done
-    
+
     cmp ecx, 0          ; Skip zero-length
     je .e820_loop
-    
+
     inc bp              ; Count this entry
     add di, 24          ; Move to next entry
     jmp .e820_loop
-    
+
 .e820_done:
 
     inc bp
@@ -119,9 +119,112 @@ section .text
 
 ; now we have memory map at 0x5000 for the kernel to read
 
-a20:
-    ;now our task is to enable the A20 line and load a gdt and transition to protected mode
+.vesa_bios_extensions:
+; now we will enable vesa bios extensions
+
+; AX = 4F00h
+; ES:DI -> buffer for SuperVGA information (see #00077)
+; Return:
+; AL = 4Fh if function supported
+; AH = status
+; 00h successful
+; ES:DI buffer filled
+; 01h failed
+; from ralf brown's interrupt list
+
+    mov ax, 0x4f00
+    xor di, di
+    mov es, di
+    mov di, 0x3000
+    ; es = 0x0000
+    ; di = 0x3000
+    int 0x10
+
+    cmp ax, 0x004f
+    jne .vbe_failure
+
+    ; now iterate over the list at [0x3000 + 0x0e]
+    ; and look for 1280x720, 32 bytes per pixel,
+    ; support for linear framebuffer and memory model 0x06
+    mov si, [0x3000 + 0x0e] ; offset half of real-mode ptr
+    mov dx, [0x3000 + 0x10] ; segment half
+
+.loop_vbe:
+    mov es, dx ; restore es to the segment ptr
+    mov word cx, [es:si] ; cx = mode number
+
+    cmp cx, 0xffff
+    je .vbe_failure
+    ; 0xffff is the terminator for the mode list
+
+    xor di, di
+    mov es, di
+    mov di, 0x3200 ; mode info block for the int 0x10 call
+    ; should i zero the mode info block between int 0x10 calls?
+
+    push cx
+    mov ax, 0x4f01
+    int 0x10
+
+    ; check mode attributes for linear framebuffer support
+    ; basically means to check if bit 7 is set in 0x3200 + 0x00
+    bt word [es:di + 0x00], 7
+    jnc .skip_vbe_mode
+
+    cmp word [es:di + 0x12], VESA_WIDTH
+    jne .skip_vbe_mode
+    cmp word [es:di + 0x14], VESA_HEIGHT
+    jne .skip_vbe_mode
+
+    cmp byte [es:di + 0x19], 32
+    jne .skip_vbe_mode
+
+    cmp byte [es:di + 0x1b], 0x06
+    jne .skip_vbe_mode
+
+.found_vbe_mode:
+    pop cx
+    ; need to save pitch and framebuffer physical address
+    ; offsets 0x10(word), 0x28(dword)
+    mov dword eax, [es:di + 0x28]
+    mov dword [0x7100], eax ;fb
+
+    mov ax, [es:di + 0x10]
+    mov word [0x7104], ax ;pitch
+
+    ; now save height, width, bpp to vbe handoff
+    mov ax, [es:di + 0x12]
+    mov word [0x7106], ax ;width
+
+    mov ax, [es:di + 0x14]
+    mov word [0x7108], ax ;height
+
+    mov al, [es:di + 0x19] ;bpp
+    mov byte [0x710a], al
+
+    jmp .vbe_set_mode
+
+.skip_vbe_mode:
+    pop cx
+    add si, 0x02
+    jmp .loop_vbe
+
+.vbe_set_mode:
+    ; we need to actually set the mode whose number is specified in si register
+    mov ax, 0x4F02
+    mov bx, cx
+    or  bx, 0x4000      ; set bit 14 for linear framebuffer shit
+    int 0x10
+
+    cmp ax, 0x004f
+    jne .vbe_failure
+
     xor ax, ax
+    mov es, ax
+
+.a20:
+    ;now our task is to enable the A20 line and load a gdt and transition to protected mode
+    ; ax = 0
     call .test_A20
     ; ax = 0 -> disabled A20, ax = 1 -> enabled A20
     cmp ax, 0
@@ -152,7 +255,6 @@ a20:
     ; far jmp to 32 bit code
 
 .load_fast_A20:
-
     in al, 0x92             ; Read System Control Port A
     test al, 2              ; Check if already enabled
     jnz .enabled_A20
@@ -160,7 +262,6 @@ a20:
     and al, 0xFE            ; Clear bit 0 (don't reset system!)
     out 0x92, al            ; Write back
     ret
-
 
 .test_A20:
 
@@ -193,7 +294,7 @@ a20:
     mov byte [ds:si], al
     pop ax
     mov byte [es:di], al
-    
+
     sti
     xor ax, ax
     je .exit
@@ -207,11 +308,13 @@ a20:
     popf
     ret
 
+.vbe_failure:
+; TODO add actual error handling for vbe
+    cli
+    jmp $
 
 
 [bits 32]
-
-
 protected_mode_start:
     ; setup data segment registers
     mov ax, DATA_SEG32; Load data segment selector
@@ -225,12 +328,7 @@ protected_mode_start:
     mov esp, 0x90000
     mov ebp, 0
     ; now check for cpuid support for long mode
-    
-    xor ebx, ebx ; offset to write at: 0x0000
-    mov edx, pm_msg
-    call println_32bit
 
-    
 .check_CPUID:
 
     pushfd ; push EFLAGS
@@ -240,7 +338,7 @@ protected_mode_start:
     xor eax, EFLAGS_ID
     ; storing the eflags and then retrieving it again will show whether or not
     ; the bit could successfully be flipped
-    push eax 
+    push eax
     popfd
     pushfd
     pop eax
@@ -264,11 +362,6 @@ protected_mode_start:
     cpuid
     test edx, CPUID_EDX_EXT_FEAT_LM
     jz .long_mode_unsupported
-
-    ; if we got here, long mode is supported
-    mov ebx, 0x00A0
-    mov edx, lng_mode_supported
-    call println_32bit
 
 .setup_paging:
     ; Zero all page table space: PML4T + PDPT + MAX_PDTS PDTs
@@ -345,7 +438,7 @@ protected_mode_start:
     dec ecx
     jnz .wire_pdpt
 
-    ; Fill all PDT entries with 2MB identity-map huge pages
+    ; Fill all PDT entries with 2MiB identity-map huge pages
     pop ecx
     shl ecx, 9               ; total entries = num_pdts * 512
     mov edi, PDT_BASE
@@ -361,10 +454,6 @@ protected_mode_start:
     dec ecx
     jnz .fill_pdts
 
-    mov edx, lng_mode_enabled
-    mov ebx, 0x0140
-    call println_32bit
-
     mov eax, cr4
     or eax, 0x20 ; 00100000b
     mov cr4, eax
@@ -372,11 +461,11 @@ protected_mode_start:
 
     lgdt [gdt_descriptor64]
     ;loads the 64 bit gdt
-    
-    ; set EFER.LME
+
+    ; set EFER.LME and EFER.NXE, 8th and 11th bits
     mov ecx, 0xC0000080
     rdmsr
-    or eax, (1 << 8)
+    or eax, (1 << 8) | (1 << 11)
     wrmsr
 
     ; activate paging
@@ -388,18 +477,12 @@ protected_mode_start:
     jmp CODE_SEG64:long_mode_start
 
 .long_mode_unsupported:
-    ; call println_32bit...
-    mov edx, lng_mode_err
-    call println_32bit
     jmp $
 
 
-
 [bits 64]
-
-
 long_mode_start:
-    ; setup data segment registers
+    ; setup segment registers
     mov ax, DATA_SEG32 ; Load data segment selector (64bit)
     mov ds, ax
     mov ss, ax
@@ -410,20 +493,6 @@ long_mode_start:
     mov rsp, 0x90000
     mov rbp, 0
 
-    cmp byte [LoadMode], 0x01
-    jne print_lm
-    mov rdi, lba_msg
-    mov rsi, 8
-    mov rdx, 0
-    call println_64bit
-
-
-print_lm:
-    mov rdi, lm_msg     ; pointer to string
-    mov rsi, 2          ; row 2
-    mov rdx, 0          ; col 0
-    call println_64bit
-
     ; Clear registers
     xor rdi, rdi
     xor rsi, rsi
@@ -431,91 +500,15 @@ print_lm:
     xor rcx, rcx
     xor r8, r8
     xor r9, r9
-    
+
     ; jmp to kernel
     jmp 0x13000
+    cli
     hlt
     jmp $
 
-; functions
-
-
-; println_64
-; inputs:  rdi = pointer to null-terminated ASCII string
-;          rsi = row (0-24)
-;          rdx = col (0-79)
-; outputs: characters written to VGA text buffer at the given row/col
-; clobbers: nothing (all registers preserved via push/pop)
-println_64bit:
-
-    push rax
-    push rbx
-    push rcx
-    push rdi
-    push rsi
-    push rdx
-
-    ; calculate VGA buffer address for (row, col)
-    ; each row is 80 cells, each cell is 2 bytes: (row*80 + col) * 2
-    mov rax, rsi            ; rax = row
-    mov rcx, 80
-    mul rcx                 ; rax = row * 80
-    add rax, rdx            ; rax = row * 80 + col
-    shl rax, 1              ; rax = (row * 80 + col) * 2  (byte offset)
-    mov rbx, 0xb8000
-    add rbx, rax            ; rbx = pointer into VGA buffer
-
-    xor rcx, rcx            ; rcx = character index
-.loop:
-
-    mov al, [rdi + rcx]     ; load next character
-    test al, al             ; null terminator?
-    jz .done
-    mov ah, 0x0f            ; attribute: white on black
-    mov [rbx + rcx * 2], ax ; write char + attribute
-    inc rcx
-    jmp .loop
-
-.done:
-
-    pop rdx
-    pop rsi
-    pop rdi
-    pop rcx
-    pop rbx
-    pop rax
-    ret
-
-
-; println_32bit
-; inputs: edx = pointer to null-terminated string
-; clobbers: nothing (all registers preserved)
-; ebx: offset from 0xb8000 to write at
-[bits 32]
-println_32bit:
-
-    pushad
-    mov ah, 0x0f            ; attribute: white on black
-    xor ecx, ecx            ; ecx = character index
-    mov edi, 0xb8000        ; VGA text buffer base
-    add edi, ebx
-.loop:
-
-    mov al, [edx + ecx]     ; load next character
-    test al, al             ; null terminator?
-    jz .done
-    mov [edi + ecx * 2], ax ; write char + attribute as a word
-    inc ecx
-    jmp .loop
-
-.done:
-
-    popad
-    ret
-
 
 ; protected mode variables
-
 gdt_start64:
     ; Null descriptor (required)
     dq 0x0000000000000000
@@ -568,15 +561,7 @@ PAGE_TABLE_DWORDS equ 1024       ; one 4KB page table = 1024 dwords
 MMAP_ENTRIES      equ 0x5000
 MMAP_COUNT        equ 0x7000
 
-
-pm_msg: db "Protected mode OK", 0
-lng_mode_err: db "long mode unsupported error", 0
-lng_mode_supported: db "long mode supported", 0
-lng_mode_enabled: db "long mode enabled", 0
-lm_msg: db "in 64 bit long mode with paging", 0
-lba_msg: db "loaded via LBA", 0
 ; real mode variables
-
 disk_address_packet_kernel:
 
     db 0x10        ; size of packet (16 bytes)
@@ -586,7 +571,6 @@ disk_address_packet_kernel:
     dw 0x1300 ; es
     dd 0x00000005 ; lower 32 bits
     dd 0x00000000 ; upper 32 bits
-
 
 gdt_start:
     ; Null descriptor (required)
@@ -618,11 +602,9 @@ gdt_descriptor:
 CODE_SEG32 equ gdt_code32 - gdt_start  ; 0x08
 DATA_SEG32 equ gdt_data32 - gdt_start  ; 0x10
 
-
 BootDrive: db 0x00
 LoadMode: db 0x00
 DefaultGeometryFlag: dw 0x0000
 
-
 times 1534- ($ -$$) db 0
-kernelSignature: dw 0xffff ; ff = 11111111b
+kernelSignature: dw 0xffff

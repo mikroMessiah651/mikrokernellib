@@ -1,0 +1,67 @@
+mikroBoot is a x86-64 bootloader that:
+
+! MIKROBOOT EXPECTS x86-64 ARCHITECTURE ONLY !
+
+1. enables vga graphics mode 3
+2. checks for LBA
+3. loads stage 2 with either CHS or LBA
+4. jumps to stage 2
+stage 2 does:
+1. loads kernel using CHS or LBA at 0x13000
+2. loads memory map from BIOS using int 0x15 eax = 0xe820
+3. loads vesa/vbe graphics mode
+4. enables a20, loads a gdt, enables protected mode and far jumps to protected mode
+5. in protected mode, it checks for CPUID and queries long mode capability
+6. if long mode is unsupported, it prints a long mode unsupported message and halts, jmp $
+7. if long mode is supported, it sets up identity paging, loads a 64 bit gdt, enables long mode, and far jumps to kernel
+
+
+memory layout is as follows:
+(might be ai hallucinated)
+  ┌────────────────┬──────────────────────────────────────────────────────────────────────┐
+  │     Region     │                             What's there                             │
+  ├────────────────┼──────────────────────────────────────────────────────────────────────┤
+  │ 0x0000–0x04FF  │ IVT + BIOS Data Area (reserved)                                      │
+  ├────────────────┼──────────────────────────────────────────────────────────────────────┤
+  │ 0x0500–0x050F  │ Briefly used by A20 test (restored)                                  │
+  ├────────────────┼──────────────────────────────────────────────────────────────────────┤
+  │ 0x0510–0x4FFF  │ FREE                                                                 │
+  ├────────────────┼──────────────────────────────────────────────────────────────────────┤
+  │ 0x5000–~0x5300 │ E820 memory map entries (24 bytes × N entries, stored in             │
+  │                │ .load_mmap_BIOS)                                                     │
+  ├────────────────┼──────────────────────────────────────────────────────────────────────┤
+  │ 0x7000–0x7001  │ E820 entry count word (mov word [0x7000], bp)                        │
+  ├────────────────┼──────────────────────────────────────────────────────────────────────┤
+  │ 0x7002–0x7BFF  │ Free (before stage 1)                                                │
+  ├────────────────┼──────────────────────────────────────────────────────────────────────┤
+  │ 0x7C00–0x7DFF  │ Stage 1                                                              │
+  ├────────────────┼──────────────────────────────────────────────────────────────────────┤
+  │ 0x7E00–0x83FF  │ Stage 2 (1536 bytes = 3 sectors)                                     │
+  ├────────────────┼──────────────────────────────────────────────────────────────────────┤
+  │ 0x8000–0x8FFFF │ Real-mode stack (SS=0x8000, grows up toward 0x8FFFE)                 │
+  ├────────────────┼──────────────────────────────────────────────────────────────────────┤
+  │ 0x9000–0x9FFF  │ PML4T (PML4T_ADDR)                                                   │
+  ├────────────────┼──────────────────────────────────────────────────────────────────────┤
+  │ 0xA000–0xAFFF  │ PDPT (PDPT_ADDR)                                                     │
+  ├────────────────┼──────────────────────────────────────────────────────────────────────┤
+  │ 0xB000–0x12FFF │ Page tables (PDT_BASE, 8×4KB = 32KB, MAX_PDTS = 8)                   │
+  ├────────────────┼──────────────────────────────────────────────────────────────────────┤
+  │ 0x13000+       │ Kernel (loaded via es=0x1300, bx=0x0000, 64 sectors = 32KB)          │
+  └────────────────┴──────────────────────────────────────────────────────────────────────┘
+
+
+memory layout for VESA/VBE:
+might also be ai hallucinated
+  ┌─────────┬──────────────────────────────────────────────────────────────────┬─────────┐
+  │ Address │                             Content                              │  Size   │
+  ├─────────┼──────────────────────────────────────────────────────────────────┼─────────┤
+  │ 0x3000  │ VbeInfoBlock (INT 10h / AX=4F00h) — SuperVGA info, OEM strings,  │ 512     │
+  │         │ mode list pointer                                                │ bytes   │
+  ├─────────┼──────────────────────────────────────────────────────────────────┼─────────┤
+  │ 0x3200  │ ModeInfoBlock (INT 10h / AX=4F01h) — framebuffer base, width,    │ 256     │
+  │         │ height, pitch, bpp, memory model                                 │ bytes   │
+  ├─────────┼──────────────────────────────────────────────────────────────────┼─────────┤
+  │ 0x3300  │ (optional) Compact kernel-facing struct you hand-pack from the   │ as      │
+  │         │ two blocks above                                                 │ needed  │
+  └─────────┴──────────────────────────────────────────────────────────────────┴─────────┘
+
