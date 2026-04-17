@@ -95,7 +95,7 @@ void __init_buddy() {
     }
 
     // align best_base_addr to 4MB, largest order allocation
-    //important for xor buddy addressing magic
+    // important for xor buddy addressing magic
     const uint64_t base = (uint64_t)best_base_addr;
     const uint64_t max_order_align = (1ULL << metadata->max_order) * PAGE_SIZE;
     const uint64_t align = (max_order_align - (base & (max_order_align - 1))) & (max_order_align - 1);

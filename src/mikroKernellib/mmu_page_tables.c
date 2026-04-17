@@ -1,7 +1,7 @@
 /* Eyal Kaghnovich
  * responsible for initialising the first memory layout for the kernel,
  * jumping to virtual memory-mapped address of kernel entry
- * initialising virt_kmalloc 
+ * initialising virt_kmalloc
  *
  * needs spinlocks?
 */
@@ -9,11 +9,8 @@
 
 #include "include/mikroKernellib-common.h"
 #include "include/mmu_page_tables.h"
-#include "include/spinlocks.h"
 #include "include/vesa_graphics_lib.h"
 #include "include/phys_kmalloc.h"
-#include "include/idt.h"
-#include "include/isr_dispatch.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -134,7 +131,7 @@ static uint64_t* map_stacks_region(void) {
         uint64_t* new_pdpt = (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
         if (new_pdpt == NULL) PANIC("Failed to allocate 4KiB page for PDPT");
         memset_pg(new_pdpt);
-        
+
         pml4t_phys_addr[pml4t_idx] = (uint64_t)new_pdpt | PTE_PRESENT | PTE_WRITABLE;
     }
     uint64_t* pdpt = (uint64_t*)(pml4t_phys_addr[pml4t_idx] & PTE_ADDR_MASK);
@@ -177,7 +174,7 @@ static void map_direct_mapping(void) {
 
         // align UP physical address to 4KB
         uint64_t base_addr_aligned = ((uint64_t)base_addr + PAGE_SIZE - 1) & ~((uint64_t)PAGE_SIZE - 1);
-        const void* vaddr = (void*)((uint64_t)DIRECT_MAP_START + base_addr_aligned); 
+        const void* vaddr = (void*)((uint64_t)DIRECT_MAP_START + base_addr_aligned);
         // should be a valid aligned virtual address
 
         const uint64_t pml4t_idx = VIRT_TO_PML4_IDX((uint64_t)vaddr);
@@ -216,12 +213,14 @@ static void map_direct_mapping(void) {
             uint64_t* pt = (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
             if (pt == NULL) PANIC("Failed to allocate 4KiB page for PT");
             memset_pg(pt);
+
             pd[pd_idx] = (uint64_t)pt | PTE_PRESENT | PTE_WRITABLE;
 
             uint64_t pte_num = ((uint64_t)last_addr_aligned - base_addr_aligned) / PAGE_SIZE;
             for (uint64_t k = 0; k < pte_num; k++) {
                 pt[pt_idx + k] = ((uint64_t)base_addr_aligned + k * PAGE_SIZE) | PTE_FLAGS_DIRECT_MAP;
             }
+
         } else {
             uint64_t cur_pd_idx = pd_idx;
 
@@ -269,6 +268,7 @@ void identity_map_rip(void) {
         uint64_t* new_pdpt = (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
         if (new_pdpt == NULL) PANIC("Failed to allocate 4KiB page for PDPT");
         memset_pg(new_pdpt);
+
         pml4t_phys_addr[pml4t_idx] = (uint64_t)new_pdpt | PTE_PRESENT | PTE_WRITABLE;
     }
     uint64_t* pdpt = (uint64_t*)(pml4t_phys_addr[pml4t_idx] & PTE_ADDR_MASK);
@@ -277,6 +277,7 @@ void identity_map_rip(void) {
         uint64_t* new_pd = (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
         if (new_pd == NULL) PANIC("Failed to allocate 4KiB page for PD");
         memset_pg(new_pd);
+
         pdpt[pdpt_idx] = (uint64_t)new_pd | PTE_PRESENT | PTE_WRITABLE;
     }
     uint64_t* pd = (uint64_t*)(pdpt[pdpt_idx] & PTE_ADDR_MASK);
@@ -302,6 +303,7 @@ static uint64_t* __init_mmu_page_tables_pml4(void) {
         uint64_t* new_pdpt = (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
         if (new_pdpt == NULL) PANIC("Failed to allocate 4KiB page for PDPT");
         memset_pg(new_pdpt);
+
         pml4t_phys_addr[pml4t_idx] = (uint64_t)new_pdpt | PTE_PRESENT | PTE_WRITABLE;
     }
     uint64_t* pdpt = (uint64_t*)(pml4t_phys_addr[pml4t_idx] & PTE_ADDR_MASK);
@@ -310,6 +312,7 @@ static uint64_t* __init_mmu_page_tables_pml4(void) {
         uint64_t* new_pd = (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
         if (new_pd == NULL) PANIC("Failed to allocate 4KiB page for PD");
         memset_pg(new_pd);
+
         pdpt[pdpt_idx] = (uint64_t)new_pd | PTE_PRESENT | PTE_WRITABLE;
     }
     uint64_t* pd = (uint64_t*)(pdpt[pdpt_idx] & PTE_ADDR_MASK);
@@ -318,6 +321,7 @@ static uint64_t* __init_mmu_page_tables_pml4(void) {
         uint64_t* new_pt = (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
         if (new_pt == NULL) PANIC("Failed to allocate 4KiB page for PT");
         memset_pg(new_pt);
+
         pd[pd_idx] = (uint64_t)new_pt | PTE_PRESENT | PTE_WRITABLE;
     }
     uint64_t* pt = (uint64_t*)(pd[pd_idx] & PTE_ADDR_MASK);
@@ -337,6 +341,7 @@ static uint64_t* __init_mmu_page_tables_pml4(void) {
     // map (rodata start to rodata end) to KERNEL_BASED_PHYS_TO_VIRT(_rodata_start)
     const uint64_t rodata_section_size = rodata_end_addr - rodata_start_addr;
     pte_num = rodata_section_size / PAGE_SIZE;
+
     i = 0;
     while (i < pte_num) {
         pt[pt_idx + i] = ((uint64_t)rodata_start_addr + i * PAGE_SIZE) | PTE_PRESENT | PTE_NX | PTE_GLOBAL; // read-only
@@ -347,6 +352,7 @@ static uint64_t* __init_mmu_page_tables_pml4(void) {
     // map (_data_start to _kernel_end) to KERNEL_BASED_PHYS_TO_VIRT(_data_start)
     const uint64_t data_section_size = kernel_end_addr - data_start_addr;
     pte_num = data_section_size / PAGE_SIZE;
+
     i = 0;
     while (i < pte_num) {
         pt[pt_idx + i] = ((uint64_t)data_start_addr + i * PAGE_SIZE) | PTE_FLAGS_KERNEL_DATA;
@@ -368,4 +374,185 @@ static uint64_t* __init_mmu_page_tables_pml4(void) {
     vesa_set_fb_virtual(DIRECT_MAP_START + vbe_info_local->framebuffer_address);
 
     return virt_rsp;
+}
+
+
+/* responsible for initialising VMA, rb-tree, page fault handler metadata and, rest of virtual memory/mmu subsystem...
+ * pf fires->VMA lookup->classification of pf->flags determined->pf handler calls map_page functions->pf iretq's
+ * WHAT ABOUT 1GB PAGES
+*/
+
+
+void map_page(const void* paddr, const void* vaddr, const uint64_t flags) {
+    // what if flags have PTE_HUGE_PAGE?
+    // align down to 4KB
+    const uint64_t aligned_addr = (uint64_t)paddr & ~((uint64_t)PAGE_SIZE - 1);
+    const uint64_t pte = aligned_addr | flags;
+    
+    const uint64_t pml4t_idx = VIRT_TO_PML4_IDX((uint64_t)vaddr);
+    const uint64_t pdpt_idx = VIRT_TO_PDPT_IDX((uint64_t)vaddr);
+    const uint64_t pd_idx = VIRT_TO_PD_IDX((uint64_t)vaddr);
+    const uint64_t pt_idx = VIRT_TO_PT_IDX((uint64_t)vaddr);
+
+    // wire pml4t...
+    if (!(pml4t_phys_addr[pml4t_idx] & PTE_PRESENT)) {
+        uint64_t* new_pdpt = (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
+        if (new_pdpt == NULL) PANIC("Failed to allocate 4KiB page for PDPT");
+        memset_pg(new_pdpt);
+
+        pml4t_phys_addr[pml4t_idx] = (uint64_t)new_pdpt | PTE_PRESENT | PTE_WRITABLE;
+    }
+    uint64_t* pdpt = (uint64_t*)(pml4t_phys_addr[pml4t_idx] & PTE_ADDR_MASK);
+
+    if (!(pdpt[pdpt_idx] & PTE_PRESENT)) {
+        uint64_t* new_pd = (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
+        if (new_pd == NULL) PANIC("Failed to allocate 4KiB page for PD");
+        memset_pg(new_pd);
+
+        pdpt[pdpt_idx] = (uint64_t)new_pd | PTE_PRESENT | PTE_WRITABLE;
+    }
+    uint64_t* pd = (uint64_t*)(pdpt[pdpt_idx] & PTE_ADDR_MASK);
+
+    if (!(pd[pd_idx] & PTE_PRESENT)) {
+        uint64_t* new_pt = (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
+        if (new_pt == NULL) PANIC("Failed to allocate 4KiB page for PT");
+        memset_pg(new_pt);
+
+        pd[pd_idx] = (uint64_t)new_pt | PTE_PRESENT | PTE_WRITABLE;
+    }
+    uint64_t* pt = (uint64_t*)(pd[pd_idx] & PTE_ADDR_MASK);
+
+    pt[pt_idx] = pte;  
+}
+
+void map_huge_page(const void* paddr, const void* vaddr, const uint64_t flags) {
+    // will cause a fault if flags don't have PTE_HUGE_PAGE
+    const uint64_t pml4t_idx = VIRT_TO_PML4_IDX((uint64_t)vaddr);
+    const uint64_t pdpt_idx = VIRT_TO_PDPT_IDX((uint64_t)vaddr);
+    uint64_t pd_idx = VIRT_TO_PD_IDX((uint64_t)vaddr);
+
+    //wire...
+    if (!(pml4t_phys_addr[pml4t_idx] & PTE_PRESENT)) {
+        uint64_t* new_pdpt = (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
+        if (new_pdpt == NULL) PANIC("Failed to allocate 4KiB page for PDPT");
+        memset_pg(new_pdpt);
+
+        pml4t_phys_addr[pml4t_idx] = (uint64_t)new_pdpt | PTE_PRESENT | PTE_WRITABLE;
+    }    
+    uint64_t* pdpt = (uint64_t*)(pml4t_phys_addr[pml4t_idx] & PTE_ADDR_MASK);
+
+    if (!(pdpt[pdpt_idx] & PTE_PRESENT)) {
+        uint64_t* new_pd = (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
+        if (new_pd == NULL) PANIC("Failed to allocate 4KiB page for PD");
+        memset_pg(new_pd);
+
+        pdpt[pdpt_idx] = (uint64_t)new_pd | PTE_PRESENT | PTE_WRITABLE;
+    }
+    uint64_t* pd = (uint64_t*)(pdpt[pdpt_idx] & PTE_ADDR_MASK);
+
+    pd[pd_idx] = ((uint64_t)paddr) | flags;
+}
+
+void map_pages(const void* paddr, const void* vaddr, const uint64_t flags, const uint64_t num_pages) {
+    if (num_pages == 0) return;
+
+    if (flags & PTE_HUGE_PAGE) {
+        uint64_t cur_vaddr = (uint64_t)vaddr;
+        uint64_t cur_paddr = (uint64_t)paddr;
+
+        uint64_t cur_pml4t_idx = ~0ULL;
+        uint64_t cur_pdpt_idx  = ~0ULL;
+        uint64_t* pdpt = NULL;
+        uint64_t* pd   = NULL;
+
+        for (uint64_t count = 0; count < num_pages; count++) {
+            uint64_t new_pml4t_idx = VIRT_TO_PML4_IDX(cur_vaddr);
+            uint64_t new_pdpt_idx  = VIRT_TO_PDPT_IDX(cur_vaddr);
+
+            if (new_pml4t_idx != cur_pml4t_idx) {
+                cur_pml4t_idx = new_pml4t_idx;
+                if (!(pml4t_phys_addr[cur_pml4t_idx] & PTE_PRESENT)) {
+                    uint64_t* new_pdpt = (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
+                    if (new_pdpt == NULL) PANIC("Failed to allocate 4KiB page for PDPT");
+                    memset_pg(new_pdpt);
+                    pml4t_phys_addr[cur_pml4t_idx] = (uint64_t)new_pdpt | PTE_PRESENT | PTE_WRITABLE;
+                }
+                pdpt = (uint64_t*)(pml4t_phys_addr[cur_pml4t_idx] & PTE_ADDR_MASK);
+                cur_pdpt_idx = ~0ULL; // force pdpt-level re-check
+            }
+
+            if (new_pdpt_idx != cur_pdpt_idx) {
+                cur_pdpt_idx = new_pdpt_idx;
+                if (!(pdpt[cur_pdpt_idx] & PTE_PRESENT)) {
+                    uint64_t* new_pd = (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
+                    if (new_pd == NULL) PANIC("Failed to allocate 4KiB page for PD");
+                    memset_pg(new_pd);
+                    pdpt[cur_pdpt_idx] = (uint64_t)new_pd | PTE_PRESENT | PTE_WRITABLE;
+                }
+                pd = (uint64_t*)(pdpt[cur_pdpt_idx] & PTE_ADDR_MASK);
+            }
+
+            pd[VIRT_TO_PD_IDX(cur_vaddr)] = cur_paddr | flags;
+            cur_vaddr += HUGE_PAGE_SIZE;
+            cur_paddr += HUGE_PAGE_SIZE;
+        }
+        return;
+    }
+
+    // 4KB pages
+    uint64_t cur_vaddr = (uint64_t)vaddr;
+    uint64_t cur_paddr = (uint64_t)paddr & ~((uint64_t)PAGE_SIZE - 1);
+
+    uint64_t cur_pml4t_idx = ~0ULL;
+    uint64_t cur_pdpt_idx  = ~0ULL;
+    uint64_t cur_pd_idx    = ~0ULL;
+    uint64_t* pdpt = NULL;
+    uint64_t* pd   = NULL;
+    uint64_t* pt   = NULL;
+
+    for (uint64_t count = 0; count < num_pages; count++) {
+        uint64_t new_pml4t_idx = VIRT_TO_PML4_IDX(cur_vaddr);
+        uint64_t new_pdpt_idx  = VIRT_TO_PDPT_IDX(cur_vaddr);
+        uint64_t new_pd_idx    = VIRT_TO_PD_IDX(cur_vaddr);
+
+        if (new_pml4t_idx != cur_pml4t_idx) {
+            cur_pml4t_idx = new_pml4t_idx;
+            if (!(pml4t_phys_addr[cur_pml4t_idx] & PTE_PRESENT)) {
+                uint64_t* new_pdpt = (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
+                if (new_pdpt == NULL) PANIC("Failed to allocate 4KiB page for PDPT");
+                memset_pg(new_pdpt);
+                pml4t_phys_addr[cur_pml4t_idx] = (uint64_t)new_pdpt | PTE_PRESENT | PTE_WRITABLE;
+            }
+            pdpt = (uint64_t*)(pml4t_phys_addr[cur_pml4t_idx] & PTE_ADDR_MASK);
+            cur_pdpt_idx = ~0ULL;
+        }
+
+        if (new_pdpt_idx != cur_pdpt_idx) {
+            cur_pdpt_idx = new_pdpt_idx;
+            if (!(pdpt[cur_pdpt_idx] & PTE_PRESENT)) {
+                uint64_t* new_pd = (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
+                if (new_pd == NULL) PANIC("Failed to allocate 4KiB page for PD");
+                memset_pg(new_pd);
+                pdpt[cur_pdpt_idx] = (uint64_t)new_pd | PTE_PRESENT | PTE_WRITABLE;
+            }
+            pd = (uint64_t*)(pdpt[cur_pdpt_idx] & PTE_ADDR_MASK);
+            cur_pd_idx = ~0ULL;
+        }
+
+        if (new_pd_idx != cur_pd_idx) {
+            cur_pd_idx = new_pd_idx;
+            if (!(pd[cur_pd_idx] & PTE_PRESENT)) {
+                uint64_t* new_pt = (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
+                if (new_pt == NULL) PANIC("Failed to allocate 4KiB page for PT");
+                memset_pg(new_pt);
+                pd[cur_pd_idx] = (uint64_t)new_pt | PTE_PRESENT | PTE_WRITABLE;
+            }
+            pt = (uint64_t*)(pd[cur_pd_idx] & PTE_ADDR_MASK);
+            if (pt == NULL) PANIC("Failed to ptify mmu_page_tables.c:map_pages");
+        }
+
+        pt[VIRT_TO_PT_IDX(cur_vaddr)] = cur_paddr | flags;
+        cur_vaddr += PAGE_SIZE;
+        cur_paddr += PAGE_SIZE;
+    }
 }
