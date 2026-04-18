@@ -521,6 +521,7 @@ void map_pages(const void* paddr, const void* vaddr, const uint64_t flags, const
                 uint64_t* new_pdpt = (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
                 if (new_pdpt == NULL) PANIC("Failed to allocate 4KiB page for PDPT");
                 memset_pg(new_pdpt);
+                
                 pml4t_phys_addr[cur_pml4t_idx] = (uint64_t)new_pdpt | PTE_PRESENT | PTE_WRITABLE;
             }
             pdpt = (uint64_t*)(pml4t_phys_addr[cur_pml4t_idx] & PTE_ADDR_MASK);
@@ -533,6 +534,7 @@ void map_pages(const void* paddr, const void* vaddr, const uint64_t flags, const
                 uint64_t* new_pd = (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
                 if (new_pd == NULL) PANIC("Failed to allocate 4KiB page for PD");
                 memset_pg(new_pd);
+
                 pdpt[cur_pdpt_idx] = (uint64_t)new_pd | PTE_PRESENT | PTE_WRITABLE;
             }
             pd = (uint64_t*)(pdpt[cur_pdpt_idx] & PTE_ADDR_MASK);
@@ -545,6 +547,7 @@ void map_pages(const void* paddr, const void* vaddr, const uint64_t flags, const
                 uint64_t* new_pt = (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
                 if (new_pt == NULL) PANIC("Failed to allocate 4KiB page for PT");
                 memset_pg(new_pt);
+
                 pd[cur_pd_idx] = (uint64_t)new_pt | PTE_PRESENT | PTE_WRITABLE;
             }
             pt = (uint64_t*)(pd[cur_pd_idx] & PTE_ADDR_MASK);

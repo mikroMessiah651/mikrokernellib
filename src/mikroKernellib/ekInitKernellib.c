@@ -15,8 +15,8 @@
 
 
 void khello(void);
-void __init_virtual_memory();
-void __init_virt_kmalloc();
+void __init_virtual_memory(void);
+void __init_virt_kmalloc(void);
 
 
 __attribute__((section(".text.entry"))) 
@@ -39,11 +39,11 @@ void khello(void) {
 }
 
 __attribute__((noreturn)) 
-void __init_virtual_memory() {
+void __init_virtual_memory(void) {
     uint64_t* rsp = __init_mmu_paging();
     jump_to_virt_and_switch_stack(rsp, KERNEL_IMAGE_START - KERNEL_PHYS_BASE);
 }
 
-void __init_virt_kmalloc() {
+void __init_virt_kmalloc(void) {
     PANIC("not implemented yet\0");
 }
