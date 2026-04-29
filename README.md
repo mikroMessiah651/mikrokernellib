@@ -178,7 +178,6 @@ gdb -ex "target remote :1234" build/kernel.bin
 | Slab allocator | Done |
 | Spinlocks | Done |
 | MMU / virtual memory | In progress |
-
 | Process/task scheduling | Not started |
 | Syscall interface | Not started |
 
