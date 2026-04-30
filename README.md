@@ -4,7 +4,7 @@ A bare-metal x86-64 kernel with a custom two-stage bootloader, written from scra
 
 ## Overview
 
-ek-mikroRTOS is a hobby OS kernel targeting x86-64 hardware. It boots entirely from scratch via a hand-written BIOS bootloader and implements foundational kernel subsystems including interrupt handling, physical memory management, and VGA text output.
+mikrokernellib is a hobby OS kernel targeting x86-64 hardware. It boots entirely from scratch via a hand-written BIOS bootloader and implements foundational kernel subsystems including interrupt handling, physical memory management, and VGA text output.
 
 ## Architecture
 
