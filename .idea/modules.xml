@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/ek-mikroKernellib.iml" filepath="$PROJECT_DIR$/.idea/ek-mikroKernellib.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/mikrokernellib.iml" filepath="$PROJECT_DIR$/.idea/mikrokernellib.iml" />
     </modules>
   </component>
 </project>

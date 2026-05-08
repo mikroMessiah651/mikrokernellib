@@ -553,9 +553,21 @@ void map_pages(const void* paddr, const void* vaddr, const uint64_t flags, const
             pt = (uint64_t*)(pd[cur_pd_idx] & PTE_ADDR_MASK);
             if (pt == NULL) PANIC("Failed to ptify mmu_page_tables.c:map_pages");
         }
-
+    
         pt[VIRT_TO_PT_IDX(cur_vaddr)] = cur_paddr | flags;
         cur_vaddr += PAGE_SIZE;
         cur_paddr += PAGE_SIZE;
     }
+}
+
+void unmap_page() {
+
+}
+
+void unmap_huge_page() {
+
+}
+
+void unmap_pages() {
+
 }

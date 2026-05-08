@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ek-mikroKernellib — CMake build system
+# mikrokernellib — CMake build system
 #
 # Disk image layout (each unit = one 512-byte sector):
 #
@@ -22,7 +22,7 @@ cmake_minimum_required(VERSION 3.20)
 #   cmake -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-x86_64-elf.cmake -B build
 # ─────────────────────────────────────────────────────────────────────────────
 
-project(ek-mikroKernellib LANGUAGES NONE)
+project(mikrokernellib LANGUAGES NONE)
 
 # Generate compile_commands.json for clangd / CLion code intelligence
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -143,7 +143,7 @@ set(KERNEL_BIN  ${CMAKE_BINARY_DIR}/kernel.bin)
 set(KERNEL_SRCDIR ${CMAKE_SOURCE_DIR}/src/mikroKernellib)
 
 set(KERNEL_CSRCS
-    ${KERNEL_SRCDIR}/ekInitKernellib.c
+    ${KERNEL_SRCDIR}/init_kernellib.c
     ${KERNEL_SRCDIR}/idt.c
     ${KERNEL_SRCDIR}/isr_dispatch.c
     ${KERNEL_SRCDIR}/phys_kmalloc.c
@@ -151,6 +151,7 @@ set(KERNEL_CSRCS
     ${KERNEL_SRCDIR}/kstrings.c
     ${KERNEL_SRCDIR}/mmu_page_tables.c
     ${KERNEL_SRCDIR}/vesa_graphics_lib.c
+    ${KERNEL_SRCDIR}/vma_rb_tree.c
 )
 
 set(KERNEL_ASMSRCS
@@ -276,7 +277,7 @@ enable_language(C CXX)
 
 # Kernel C / C++ sources
 add_library(kernel_ide OBJECT EXCLUDE_FROM_ALL
-    src/mikroKernellib/ekInitKernellib.c
+    src/mikroKernellib/init_kernellib.c
     src/mikroKernellib/idt.c
     src/mikroKernellib/isr_dispatch.c
     src/mikroKernellib/phys_kmalloc.c

@@ -410,7 +410,7 @@ static status_t kmem_cache_grow(kmem_cache* cache) {
     ((type*)((char*)(ptr) - offsetof(type, member)))
 
 // these functions exist for those concerned about optimisation
-// they are just slab_alloc/ free, but without the size to index translation
+// they are just slab_alloc/free, but without the size to index translation
 // they take a cache from which the caller wants to allocate
 // and give an object from the free or partial slabs
 void* kmem_cache_kalloc(kmem_cache* cache) {
