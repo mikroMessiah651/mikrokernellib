@@ -7,3 +7,4 @@ build/
 
 # Claude Code local settings
 .claude/settings.local.json
+src/mikroBootldr/bin/
