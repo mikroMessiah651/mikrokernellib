@@ -11,8 +11,9 @@
 /* seg_offset_to_lm(seg, off) — real-mode seg:off pair → 64-bit physical address
  * Use for actual seg:off pairs (e.g. WinFuncPtr). The VBE PhysBasePtr
  * (framebuffer_address) is already a flat physical address — cast it directly:
- *   volatile uint32_t* fb = (volatile uint32_t*)(uintptr_t)vbe_md->framebuffer_address; */
-#define seg_offset_to_lm(seg, off)  ((uintptr_t)((seg) << 4) + (uintptr_t)(off))
+ *   volatile uint32_t* fb = (volatile
+ * uint32_t*)(uintptr_t)vbe_md->framebuffer_address; */
+#define seg_offset_to_lm(seg, off) ((uintptr_t)((seg) << 4) + (uintptr_t)(off))
 
 #define vbe_handoff_address 0x7100
 
@@ -23,7 +24,6 @@ typedef struct {
     uint16_t height_px;
     uint8_t bpp;
 } __attribute__((packed)) boot_vbe_handoff;
-
 
 void vesa_set_fb_virtual(uint64_t virtual_fb_base);
 void vbe_blue_screen(void);

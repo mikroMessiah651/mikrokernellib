@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.20)
 #
 # Disk image layout (each unit = one 512-byte sector):
 #
-#   LBA 0      Stage 1 bootloader  (512 bytes, ends with 0xAA55 boot signature)
+#   LBA 0      Stage 1 bootloader  (512 bytes)
 #   LBA 1–3   Stage 2 bootloader  (≤ 1536 bytes / 3 sectors, loaded to 0x7E00)
 #   LBA 4      Gap sector          (zeroed)
 #   LBA 5+     Kernel binary       (loaded to phys 0x9000 by stage 2)
@@ -91,7 +91,7 @@ set(KERNEL_CXXFLAGS
 
 # ─── Stage 1 bootloader ───────────────────────────────────────────────────────
 
-set(STAGE1_SRC ${CMAKE_SOURCE_DIR}/src/Bootldr/mikroBootldr-stg1-x86.asm)
+set(STAGE1_SRC ${CMAKE_SOURCE_DIR}/src/mikroBootldr/mikroBootldr-stg1-x86.asm)
 set(STAGE1_BIN ${CMAKE_BINARY_DIR}/stage1.bin)
 
 add_custom_command(
@@ -119,21 +119,15 @@ message(STATUS "   1920x1080 or lower. Override with -DVESA_WIDTH=W -DVESA_HEIGH
 message(STATUS "──────────────────────────────────────────────────────────")
 
 # ─── Stage 2 bootloader ───────────────────────────────────────────────────────
+#
+# Stage 2 must load the whole kernel off disk. Rather than hand-maintaining a
+# sector count, the build runs cmake/build_stage2.cmake, which measures the
+# freshly built kernel.bin and assembles stage2 with -DKERNEL_SECTORS set to the
+# exact count. Stage 2 therefore depends on the kernel — see the Kernel section
+# below for the add_custom_command that produces ${STAGE2_BIN}.
 
-set(STAGE2_SRC ${CMAKE_SOURCE_DIR}/src/Bootldr/mikroBootldr-stg2-x86.asm)
+set(STAGE2_SRC ${CMAKE_SOURCE_DIR}/src/mikroBootldr/mikroBootldr-stg2-x86.asm)
 set(STAGE2_BIN ${CMAKE_BINARY_DIR}/stage2.bin)
-
-add_custom_command(
-    OUTPUT  ${STAGE2_BIN}
-    COMMAND ${NASM} -f bin
-                    -DVESA_WIDTH=${VESA_WIDTH}
-                    -DVESA_HEIGHT=${VESA_HEIGHT}
-                    -o ${STAGE2_BIN} ${STAGE2_SRC}
-    DEPENDS ${STAGE2_SRC}
-    COMMENT "[NASM] mikroBootldr-stg2-x86.asm → stage2.bin  (${VESA_WIDTH}x${VESA_HEIGHT})"
-    VERBATIM
-)
-add_custom_target(stage2 DEPENDS ${STAGE2_BIN})
 
 # ─── Kernel ───────────────────────────────────────────────────────────────────
 
@@ -143,21 +137,25 @@ set(KERNEL_BIN  ${CMAKE_BINARY_DIR}/kernel.bin)
 set(KERNEL_SRCDIR ${CMAKE_SOURCE_DIR}/src/mikroKernellib)
 
 set(KERNEL_CSRCS
-    ${KERNEL_SRCDIR}/init_kernellib.c
+    ${KERNEL_SRCDIR}/start_kernel.c
     ${KERNEL_SRCDIR}/idt.c
     ${KERNEL_SRCDIR}/isr_dispatch.c
     ${KERNEL_SRCDIR}/phys_kmalloc.c
     ${KERNEL_SRCDIR}/kmath.c
     ${KERNEL_SRCDIR}/kstrings.c
-    ${KERNEL_SRCDIR}/mmu_page_tables.c
+    ${KERNEL_SRCDIR}/mmu.c
     ${KERNEL_SRCDIR}/vesa_graphics_lib.c
-    ${KERNEL_SRCDIR}/vma_rb_tree.c
+    ${KERNEL_SRCDIR}/rb_tree.c
+    ${KERNEL_SRCDIR}/kmain.c
+    ${KERNEL_SRCDIR}/paging.c
+    ${KERNEL_SRCDIR}/vm.c
+    
 )
 
 set(KERNEL_ASMSRCS
     ${KERNEL_SRCDIR}/idt_common.asm
     ${KERNEL_SRCDIR}/spinlocks.asm
-    ${KERNEL_SRCDIR}/mmu_paging_x86.asm
+    ${KERNEL_SRCDIR}/mmu.asm
     ${KERNEL_SRCDIR}/nasm_font.asm
 )
 
@@ -179,12 +177,12 @@ endforeach()
 # Assemble each ASM source to its own .o (elf64 for kernel, not flat bin)
 foreach(_src ${KERNEL_ASMSRCS})
     get_filename_component(_name ${_src} NAME_WE)
-    set(_obj ${CMAKE_BINARY_DIR}/${_name}.o)
+    set(_obj ${CMAKE_BINARY_DIR}/${_name}_asm.o)
     add_custom_command(
         OUTPUT  ${_obj}
-        COMMAND ${NASM} -f elf64 -I${KERNEL_SRCDIR}/ -o ${_obj} ${_src}
+        COMMAND ${NASM} -f elf64 -g -F dwarf -I${KERNEL_SRCDIR}/ -o ${_obj} ${_src}
         DEPENDS ${_src}
-        COMMENT "[NASM] ${_name}.asm → ${_name}.o"
+        COMMENT "[NASM] ${_name}.asm → ${_name}_asm.o"
         VERBATIM
     )
     list(APPEND KERNEL_OBJS ${_obj})
@@ -207,31 +205,49 @@ add_custom_command(
 )
 add_custom_target(kernel DEPENDS ${KERNEL_BIN})
 
+# ─── Stage 2 assembly (kernel-size-aware) ────────────────────────────────────
+#
+# Deferred to here because it needs ${KERNEL_BIN} to exist first.
+# cmake/build_stage2.cmake measures kernel.bin and passes -DKERNEL_SECTORS to
+# NASM, so the loader's sector count is always exactly the kernel's size.
+
+add_custom_command(
+    OUTPUT  ${STAGE2_BIN}
+    COMMAND ${CMAKE_COMMAND}
+            -DNASM=${NASM}
+            -DSTAGE2_SRC=${STAGE2_SRC}
+            -DSTAGE2_BIN=${STAGE2_BIN}
+            -DKERNEL_BIN=${KERNEL_BIN}
+            -DVESA_WIDTH=${VESA_WIDTH}
+            -DVESA_HEIGHT=${VESA_HEIGHT}
+            -P ${CMAKE_SOURCE_DIR}/cmake/build_stage2.cmake
+    DEPENDS ${STAGE2_SRC} ${KERNEL_BIN} ${CMAKE_SOURCE_DIR}/cmake/build_stage2.cmake
+    COMMENT "[NASM] mikroBootldr-stg2-x86.asm → stage2.bin  (auto-sized kernel loader)"
+    VERBATIM
+)
+add_custom_target(stage2 DEPENDS ${STAGE2_BIN})
+
 # ─── Disk image ───────────────────────────────────────────────────────────────
 
 set(DISK_IMG ${CMAKE_BINARY_DIR}/disk.img)
 
 add_custom_command(
     OUTPUT  ${DISK_IMG}
-    # Blank 64-sector (32 KiB) raw image — unused sectors read as zero
-    COMMAND ${DD_TOOL} if=/dev/zero of=${DISK_IMG} bs=512 count=64 status=none
+    # Start from an empty file; the dd writes below extend it as needed
+    # (conv=notrunc keeps earlier writes; the kernel write sets the final size).
+    COMMAND ${DD_TOOL} if=/dev/zero of=${DISK_IMG} bs=512 count=0 status=none
     # LBA 0 — Stage 1 (512 bytes; byte 510-511 = 0xAA55 boot signature)
     COMMAND ${DD_TOOL} if=${STAGE1_BIN} of=${DISK_IMG} bs=512 seek=0  conv=notrunc status=none
     # LBA 1 — Stage 2 (spans sectors 1-3; sector 4 stays zeroed as gap)
     COMMAND ${DD_TOOL} if=${STAGE2_BIN} of=${DISK_IMG} bs=512 seek=1  conv=notrunc status=none
-    # LBA 5 — Kernel (stage 2 loads this to phys 0x9000 and jumps there)
+    # LBA 5 — Kernel (stage 2 loads this to phys 0x13000 and jumps there)
     COMMAND ${DD_TOOL} if=${KERNEL_BIN} of=${DISK_IMG} bs=512 seek=5  conv=notrunc status=none
     DEPENDS ${STAGE1_BIN} ${STAGE2_BIN} ${KERNEL_BIN}
     COMMENT "[IMG]  disk.img"
     VERBATIM
 )
-add_custom_target(stage2_size_reminder
-    COMMAND ${CMAKE_COMMAND} -E echo "WARNING: are you sure bootloader stage 2 is updated to fit new binary's size?"
-    VERBATIM
-)
 
 add_custom_target(disk ALL DEPENDS ${DISK_IMG})
-add_dependencies(disk stage2_size_reminder)
 
 # ─── QEMU run targets ─────────────────────────────────────────────────────────
 
@@ -277,15 +293,20 @@ enable_language(C CXX)
 
 # Kernel C / C++ sources
 add_library(kernel_ide OBJECT EXCLUDE_FROM_ALL
-    src/mikroKernellib/init_kernellib.c
     src/mikroKernellib/idt.c
     src/mikroKernellib/isr_dispatch.c
     src/mikroKernellib/phys_kmalloc.c
     src/mikroKernellib/kmath.c
     src/mikroKernellib/kstrings.c
-    src/mikroKernellib/mmu_page_tables.c
+    src/mikroKernellib/mmu.c
     src/mikroKernellib/vesa_graphics_lib.c
+    src/mikroKernellib/rb_tree.c
+    src/mikroKernellib/start_kernel.c
+    src/mikroKernellib/kmain.c
+    src/mikroKernellib/paging.c
+    src/mikroKernellib/vm.c
 )
+
 target_compile_options(kernel_ide PRIVATE ${KERNEL_CFLAGS})
 target_include_directories(kernel_ide PRIVATE
     ${CMAKE_SOURCE_DIR}
@@ -301,10 +322,11 @@ set_target_properties(kernel_ide PROPERTIES
 # ASM sources (file listing only — no compilation)
 add_custom_target(bootldr_ide
     SOURCES
-        src/Bootldr/mikroBootldr-stg1-x86.asm
-        src/Bootldr/mikroBootldr-stg2-x86.asm
+        src/mikroBootldr/mikroBootldr-stg1-x86.asm
+        src/mikroBootldr/mikroBootldr-stg2-x86.asm
         src/mikroKernellib/idt_common.asm
         src/mikroKernellib/spinlocks.asm
-        src/mikroKernellib/mmu_paging_x86.asm
+        src/mikroKernellib/mmu.asm
         src/mikroKernellib/nasm_font.asm
 )
+

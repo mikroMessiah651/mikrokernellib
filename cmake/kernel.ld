@@ -1,6 +1,6 @@
 /* kernel.ld */
    /*OUTPUT_FORMAT(binary)*/
-   ENTRY(__init_kernellib)
+   ENTRY(start_kernel)
 
    /* Bootloader-populated data at fixed physical addresses */
    mmap_entry_count = 0x7000;
