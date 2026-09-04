@@ -6,9 +6,11 @@
 
 #include "include/phys_kmalloc.h"
 #include "include/kmath.h"
+#include "include/mapped_phys_kmalloc.h"
 #include "include/mikroKernellib-common.h"
 #include "include/spinlocks.h"
 #include "include/vesa_graphics_lib.h"
+#include "include/vm.h"
 
 #define NUM_MAX_ORDER (metadata->max_order + 1) // 11
 
@@ -17,6 +19,8 @@ uint64_t kernel_end = (uint64_t)&_kernel_end;
 
 static spinlock_t buddy_lock;
 static spinlock_t slab_lock;
+
+static offset_t phys_map_offset = 0;
 
 static inline void memset_lb(void* ptr, const uint8_t val,
                              const uint64_t size) {
@@ -201,25 +205,25 @@ static inline uint8_t toggle_bitmap(const buddy_metadata* metadata,
     const uint32_t bit_pos = metadata->order_offsets[order] + pair_idx;
     const uint32_t byte_idx = bit_pos / 8;
     const uint8_t bit_offset = bit_pos % 8;
-    spinlock_acquire(&pmm_lock);
+    spinlock_acquire(&buddy_lock);
     bitmap[byte_idx] ^= (1 << bit_offset);
     const uint8_t ret = (bitmap[byte_idx] >> bit_offset) & 1;
-    spinlock_release(&pmm_lock);
+    spinlock_release(&buddy_lock);
     return ret;
 }
 
 void* buddy_kalloc(const size_t size) {
     const buddy_metadata* metadata = (buddy_metadata*)kernel_end;
     uint8_t order = 0;
-    while (size > (1ULL << order) * PAGE_SIZE)
-        order++;
+    while (size > (1ULL << order) * PAGE_SIZE) order++;
+
     if (order > metadata->max_order)
         return NULL; // if requested size is too big return null
 
     for (int idx = order; idx < NUM_MAX_ORDER; idx++) {
-        spinlock_acquire(&pmm_lock);
+        spinlock_acquire(&buddy_lock);
         if (metadata->free_lists_ptr[idx] == NULL) {
-            spinlock_release(&pmm_lock);
+            spinlock_release(&buddy_lock);
             continue;
         }
         // pop block from free list
@@ -247,16 +251,19 @@ void* buddy_kalloc(const size_t size) {
             metadata->free_lists_ptr[level - 1] =
                 buddy; // free lists ptr points to buddy
         }
-        spinlock_release(&pmm_lock);
+        spinlock_release(&buddy_lock);
 
         toggle_bitmap(metadata, (uint64_t)chunk, order);
-        return (void*)chunk;
+        return chunk;
     }
 
     return NULL;
 }
 
 void buddy_kfree(void* chunk, const size_t size) {
+    if (chunk == NULL || size == 0)
+        return;
+
     const buddy_metadata* metadata = (buddy_metadata*)kernel_end;
 
     uint8_t order = 0;
@@ -282,7 +289,7 @@ void buddy_kfree(void* chunk, const size_t size) {
             (buddy_chunk*)((uint64_t)chunk ^ ((1ULL << order) * PAGE_SIZE));
 
         // remove buddy from free list
-        spinlock_acquire(&pmm_lock);
+        spinlock_acquire(&buddy_lock);
         if (buddy->prev != NULL)
             buddy->prev->next = buddy->next;
         else
@@ -295,12 +302,12 @@ void buddy_kfree(void* chunk, const size_t size) {
         // coalesced block is at the lower address
         if ((uint64_t)buddy < (uint64_t)chunk)
             chunk = (void*)buddy;
-        spinlock_release(&pmm_lock);
+        spinlock_release(&buddy_lock);
 
         order++;
     }
 
-    spinlock_acquire(&pmm_lock);
+    spinlock_acquire(&buddy_lock);
     // insert coalesced block into free list at final order
     buddy_chunk* block = chunk;
     block->prev = NULL;
@@ -308,16 +315,16 @@ void buddy_kfree(void* chunk, const size_t size) {
     if (block->next != NULL)
         block->next->prev = block;
     metadata->free_lists_ptr[order] = block;
-    spinlock_release(&pmm_lock);
+    spinlock_release(&buddy_lock);
 }
 
+
 /* TODO decide which slabs go back to buddy_alloc() */
-
-
+// if a slab is empty for a long time, it should be freed..
 #define NUM_CACHES 8
 static kmem_cache slab_caches[NUM_CACHES];
 
-static uint64_t calc_alignment(kmem_cache* cache) {
+static uint64_t calc_alignment(const kmem_cache* cache) {
     const uint64_t first_object_offset =
         (sizeof(slab_descriptor) + cache->object_align - 1) &
         ~(cache->object_align - 1);
@@ -426,7 +433,7 @@ static status_t kmem_cache_grow(kmem_cache* cache) {
     // grows a kmem_cache with another buddy_alloc((1ULL <<
     // kmem_cache->slab_order))
     slab_descriptor* descriptor =
-        (slab_descriptor*)buddy_kalloc((1ULL << cache->slab_order) * PAGE_SIZE);
+        (slab_descriptor*)mapped_buddy_kalloc((1ULL << cache->slab_order) * PAGE_SIZE);
     if (descriptor == NULL)
         return STATUS_ERROR;
     descriptor->cache = cache;
@@ -465,8 +472,7 @@ static status_t kmem_cache_grow(kmem_cache* cache) {
     return STATUS_OK;
 }
 
-// these functions exist for those concerned about optimisation
-// they are just slab_alloc/free, but without the size to index translation
+// slab_alloc/free, but without the size to index translation
 // they take a cache from which the caller wants to allocate
 // and give an object from the free or partial slabs
 void* kmem_cache_kalloc(kmem_cache* cache) {
@@ -574,11 +580,9 @@ void* slab_kalloc(const size_t size) {
     // node doesn't yet handle caches outside the statically allocated caches
     if (size > MAX_SLAB_ALLOC_SIZE)
         return NULL;
-
     const uint32_t index = size_to_index(size);
-    if (index > NUM_CACHES) {
+    if (index >= NUM_CACHES)
         return NULL;
-    }
 
     kmem_cache* cache = &slab_caches[index];
     return kmem_cache_kalloc(cache);
@@ -586,6 +590,9 @@ void* slab_kalloc(const size_t size) {
 
 void slab_kfree(void* object, const size_t size) {
     const uint32_t index = size_to_index(size);
+    if (index >= NUM_CACHES)
+        return;
+
     kmem_cache* cache = &slab_caches[index];
     kmem_cache_kfree(cache, object);
 }
@@ -595,7 +602,7 @@ kmem_cache* kmem_cache_create_sl(kmem_cache* cache, const size_t size) {
      * calculating object_align, objects_per_slab,
      * and then assigning a slab_order based on objects_per_slab
      * this is exposed to kernellib, and should be used for creating caches
-     * optimised for kernel structs/objects this runs after APs are turned on
+     * optimised for kernel structs/objects, this may run after APs are turned on
      * and therefore requires spinlocks
      */
     spinlock_acquire(&slab_lock);
@@ -649,28 +656,29 @@ void __init_phys_kmalloc() {
 
 void* phys_kmalloc(const size_t size, const ALLOC_FLAG flg) {
     switch (flg) {
-    case PAGEFRAME_ALLOC:
+    case BUDDY_ALLOC:
         return buddy_kalloc(size);
     case SLAB_ALLOC:
         return slab_kalloc(size);
     default:
         if (size <= MAX_SLAB_ALLOC_SIZE)
             return slab_kalloc(size);
-        return buddy_kalloc(size);
+        else
+            return buddy_kalloc(size);
     }
 }
-// allocation functions that only take a size and then allcoate from the slab
-// allocator are flawed as they cannot allocate from a kmem_cache that wasnt
+// allocation functions that only take a size and then allocate from the slab
+// allocator are flawed as they cannot allocate from a kmem_cache that want
 // initialised by default solution is to either take a kmem_cache* argument in
 // phys_kmalloc that could be NULL maybe ALLOC_FLAG should have some option
 // like: SLAB_WITH_CACHE
 
 void phys_kfree(void* ptr, const size_t size, const ALLOC_FLAG flg) {
     switch (flg) {
-    case PAGEFRAME_FREE:
+    case BUDDY_ALLOC:
         buddy_kfree(ptr, size);
         break;
-    case SLAB_FREE:
+    case SLAB_ALLOC:
         slab_kfree(ptr, size);
         break;
     default:
@@ -679,4 +687,19 @@ void phys_kfree(void* ptr, const size_t size, const ALLOC_FLAG flg) {
         else
             buddy_kfree(ptr, size);
     }
+}
+
+void* get_zeroed_phys_page(void) {
+    void* ptr = buddy_kalloc(PAGE_SIZE);
+    if (ptr == NULL)
+        return NULL;
+
+    memset_lb(ptr, 0, PAGE_SIZE);
+    return ptr;
+}
+
+void free_phys_page(void* page) {
+    if (page == NULL)
+        return;
+    buddy_kfree(page, PAGE_SIZE);
 }

@@ -5,23 +5,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// TODO: change flag usage to enum usage
+enum alloc_flag : uint8_t {
+    BUDDY_ALLOC,
+    SLAB_ALLOC,
+    CHOOSE_ALLOC,
+};
 
-#define PAGEFRAME_ALLOC 0b00000001
-#define BUDDY_ALLOC 0b00000001
-#define SLAB_ALLOC 0b00000010
-#define CHOOSE_ALLOC 0b00000000
+#define ALLOC_FLAG enum alloc_flag
 
-#define BUDDY_FREE 0b00000001
-#define PAGEFRAME_FREE 0b00000000
-#define SLAB_FREE 0b00000010
-#define CHOOSE_FREE 0b00000000
-
-// #define SPECIAL_ALLOC 0b11111111
-
-#define ALLOC_FLAG flag
-typedef uint8_t flag;
-// if flg = 0b00000000 -> let the allocator decide on strategy
 
 #define ONE_MB_ADDRESS 0x100000
 
@@ -89,3 +80,6 @@ typedef struct kmem_cache {
 kmem_cache* kmem_cache_create_sl(kmem_cache* cache, size_t size);
 void* kmem_cache_kalloc(kmem_cache* cache);
 void kmem_cache_kfree(kmem_cache* cache, void* object);
+
+void* get_zeroed_phys_page(void);
+void free_phys_page(void* page);

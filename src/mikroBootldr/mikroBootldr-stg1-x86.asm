@@ -86,11 +86,11 @@ section .text
 	inc ah
 	mov [Sector], ah
 	; Sector = remainder(LBA / SPT)
-	; al = qoutient(LBA / SPT)
+	; al = quotient(LBA / SPT)
 	; calculate Head and Cylinder
 	xor ah, ah
 	div byte [TotalHeads]
-	mov byte [Head], ah ;ah = remainder(qoutient(lba / spt) / totalheads)
+	mov byte [Head], ah ;ah = remainder(quotient(lba / spt) / totalheads)
 	mov byte [Cylinder], al
 
 .chs_load_stage2:
@@ -104,7 +104,7 @@ section .text
 	mov byte dh, [Head]
 	mov byte ch, [Cylinder]
 	mov byte cl, [Sector]
-	; sector guarenteed to be smaller than 255 so upperBits not needed
+	; sector guaranteed to be smaller than 255 so upperBits not needed
 
 	mov byte dl, [BootDrive] ; specify the drive
 
@@ -138,6 +138,7 @@ section .text
 .jump_stage2:
 	; pass parameters and setup registers for stage 2
 	; jump to stage 2 code
+
 	mov byte dl, [BootDrive]
 	jmp 0x0000:0x7e00 ; far jump to stage 2
 

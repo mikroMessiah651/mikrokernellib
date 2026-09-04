@@ -19,6 +19,8 @@ typedef int status_t;
 #define JMP goto
 #define jmp goto
 
+void* my_memcpy(void* dest, const void* src, size_t n);
+
 #define PANIC(msg)                                               \
     {                                                            \
         vesa_nt_println("KERNEL PANIC: " msg, VESA_LAST_ROW, 0); \

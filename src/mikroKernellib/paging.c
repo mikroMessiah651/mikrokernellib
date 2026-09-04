@@ -3,6 +3,8 @@
  * kernel mapping functions...
  */
 
+#include "include/paging.h"
+#include "include/mapped_phys_kmalloc.h"
 #include "include/mikroKernellib-common.h"
 #include "include/mmu.h"
 #include "include/phys_kmalloc.h"
@@ -37,11 +39,18 @@ static struct rb_node* kernel_rb_root = NULL;
 static kmem_cache vma_cache;
 
 inline uint64_t vma_start_of_node(struct rb_node* x) {
-    vma_t* v = container_of(x, struct vma, node);
+    const vma_t* v = container_of(x, struct vma, node);
     return v->vma_start;
 }
 
 // TODO: USE FUCKING SPINLOCKS
+// AND RETHINK ADDING VMAs ON EVERY MAP
+
+static offset_t phys_map_offset = 0;
+
+static inline void* pmap_to_virt(const void* p) {
+    return (void*)((uint64_t)p + phys_map_offset);
+}
 
 // rb_tree<vma_t> t;
 static inline void rb_insert_vma(vma_t* v) {
@@ -55,7 +64,7 @@ static inline void rb_remove_vma(vma_t* v) {
 }
 
 void kmap_page(const void* paddr, const void* vaddr, const uint64_t flags) {
-    vma_t* vma = kmem_cache_kalloc(&vma_cache);
+    vma_t* vma = mapped_kmem_cache_kalloc(&vma_cache);
     if (vma == NULL)
         PANIC("FAILED TO ALLOCATE VMA STRUCT IN KMAP_PAGE\0")
     vma->vma_start = (uint64_t)vaddr;
@@ -72,13 +81,13 @@ void kunmap_page(const void* paddr, const void* vaddr) {
         return;
 
     rb_remove_vma(vma);
-    kmem_cache_kfree(&vma_cache, vma);
+    mapped_kmem_cache_kfree(&vma_cache, vma);
     unmap_page(kernel_pml4t, paddr, vaddr);
 }
 
 void kmap_huge_page(const void* paddr, const void* vaddr,
                     const uint64_t flags) {
-    vma_t* vma = kmem_cache_kalloc(&vma_cache);
+    vma_t* vma = mapped_kmem_cache_kalloc(&vma_cache);
     if (vma == NULL) {
         PANIC("FAILED TO ALLOCATE HUGE VMA STRUCT IN KMAP_PAGE\0")
     }
@@ -98,7 +107,7 @@ void kunmap_huge_page(const void* paddr, const void* vaddr) {
     }
 
     rb_remove_vma(vma);
-    kmem_cache_kfree(&vma_cache, vma);
+    mapped_kmem_cache_kfree(&vma_cache, vma);
     unmap_huge_page(kernel_pml4t, paddr, vaddr);
 }
 
@@ -106,7 +115,7 @@ void kmap_pages(const void* paddr, const void* vaddr, const uint64_t flags,
                 const size_t num_pages) {
     if (flags & PTE_HUGE_PAGE) {
         // huge page mappings
-        vma_t* vma = kmem_cache_kalloc(&vma_cache);
+        vma_t* vma = mapped_kmem_cache_kalloc(&vma_cache);
         if (vma == NULL) {
             PANIC("FAILED TO ALLOCATE A VMA STRUCT IN KMAP_PAGES\0");
         }
@@ -116,7 +125,7 @@ void kmap_pages(const void* paddr, const void* vaddr, const uint64_t flags,
         rb_insert_vma(vma);
     } else {
         // 4KB pages
-        vma_t* vma = kmem_cache_kalloc(&vma_cache);
+        vma_t* vma = mapped_kmem_cache_kalloc(&vma_cache);
         if (vma == NULL) {
             PANIC("FAILED TO ALLOCATE A VMA STRUCT IN KMAP_PAGES\0");
         }
@@ -137,14 +146,14 @@ void kunmap_pages(const void* paddr, const void* vaddr, const uint64_t flags,
     }
 
     rb_remove_vma(vma);
-    kmem_cache_kfree(&vma_cache, vma);
+    mapped_kmem_cache_kfree(&vma_cache, vma);
     unmap_pages(kernel_pml4t, paddr, vaddr, flags, num_pages);
 }
 
-/* initialise kernel VM */
 
+/* initialise kernel VM */
 static inline void memset_pg(void* ptr) {
-    uint8_t* p = (uint8_t*)ptr;
+    uint8_t* p = ptr;
     for (uint64_t i = 0; i < 4096; i++) {
         p[i] = 0;
     }
@@ -168,8 +177,8 @@ static void map_framebuffer() {
 static uint64_t* map_stacks(void) {
     // returns virtual address to put in rsp
     // allocate first stack for current bootstrap processor
-    uint64_t* phys_stack_addr = (uint64_t*)phys_kmalloc(
-        4 * PAGE_SIZE, PAGEFRAME_ALLOC); // allocate 16KB
+    uint64_t* phys_stack_addr = (uint64_t*)mapped_phys_kmalloc(
+        4 * PAGE_SIZE, BUDDY_ALLOC); // allocate 16KB
     if (phys_stack_addr == NULL)
         PANIC("Failed to allocate 16KiB page for stack");
 
@@ -192,7 +201,7 @@ static void map_direct_mapping(void) {
             continue;
 
         void* base_addr = mmap_bios_entries[i].base_address;
-        uint64_t size = mmap_bios_entries[i].chunk_size;
+        const uint64_t size = mmap_bios_entries[i].chunk_size;
         const void* last_addr = (void*)((uint64_t)base_addr + size);
 
         // align UP physical address to 4KB
@@ -206,9 +215,9 @@ static void map_direct_mapping(void) {
             continue; // nothing to map
 
         // 2MB aligned span carved out of the region for huge page mappings
-        uint64_t huge_base = (base_addr_aligned + HUGE_PAGE_SIZE - 1) &
-                             ~(HUGE_PAGE_SIZE - 1); // align UP
-        uint64_t huge_end =
+        const uint64_t huge_base = (base_addr_aligned + HUGE_PAGE_SIZE - 1) &
+                                   ~(HUGE_PAGE_SIZE - 1); // align UP
+        const uint64_t huge_end =
             last_addr_aligned & ~(HUGE_PAGE_SIZE - 1); // ALIGN DOWN
 
         if (huge_base >= huge_end) {
@@ -221,7 +230,7 @@ static void map_direct_mapping(void) {
         } else {
             // head 4KB pages up to the first 2MB boundary
             if (base_addr_aligned < huge_base) {
-                uint64_t pre_pte_num =
+                const uint64_t pre_pte_num =
                     (huge_base - base_addr_aligned) / PAGE_SIZE;
                 kmap_pages((void*)base_addr_aligned,
                            (void*)(DIRECT_MAP_START + base_addr_aligned),
@@ -229,12 +238,12 @@ static void map_direct_mapping(void) {
             }
 
             // 2MB huge pages for the aligned middle span
-            uint64_t huge_count = (huge_end - huge_base) / HUGE_PAGE_SIZE;
+            const uint64_t huge_count = (huge_end - huge_base) / HUGE_PAGE_SIZE;
             kmap_pages((void*)huge_base, (void*)(DIRECT_MAP_START + huge_base),
                        PTE_FLAGS_DIRECT_MAP | PTE_HUGE_PAGE, huge_count);
 
             // tail 4KB pages past the last 2MB boundary
-            uint64_t leftover_pte_num =
+            const uint64_t leftover_pte_num =
                 (last_addr_aligned - huge_end) / PAGE_SIZE;
             if (leftover_pte_num > 0) {
                 kmap_pages((void*)huge_end,
@@ -245,54 +254,94 @@ static void map_direct_mapping(void) {
     }
 }
 
-static inline void identity_map_rip(void) {
-    kmap_pages(0, 0, 0ULL | PTE_PRESENT | PTE_WRITABLE | PTE_HUGE_PAGE, 2);
+static inline void map_boot_memory(void) {
+    // Important!
+    kmap_pages(0, 0, 0ULL | PTE_PRESENT | PTE_WRITABLE | PTE_HUGE_PAGE, 8);
 }
+
+
+void unmap_boot_memory() {
+    kunmap_pages(0, 0, 0ULL | PTE_PRESENT | PTE_WRITABLE | PTE_HUGE_PAGE, 8);
+}
+
 
 uint64_t* __init_mmu(void) {
     // initialise kernel rb-tree and vma cache
     kmem_cache_create_sl(&vma_cache, sizeof(vma_t));
-    kernel_pml4t = (uint64_t*)phys_kmalloc(PAGE_SIZE, BUDDY_ALLOC);
+
+    kernel_pml4t = (uint64_t*)mapped_phys_kmalloc(PAGE_SIZE, BUDDY_ALLOC);
     if (kernel_pml4t == NULL) {
         PANIC("FAILED TO ALLOCATE PML4T ROOT FOR THE KERNEL\0");
     }
     memset_pg(kernel_pml4t);
-    uint64_t vaddr = KERNEL_IMAGE_START;
+
+    uint64_t vaddr = kernel_start_addr;
 
     // map (_kernel_start to _text_end) to virtual address: KERNEL_IMAGE_START
     const uint64_t text_section_size = text_end_addr - kernel_start_addr;
     uint64_t num_pages =
         text_section_size /
         PAGE_SIZE; // text_end and kernel_start should be 4KB aligned
-    kmap_pages((void*)kernel_start_addr, (void*)vaddr, PTE_FLAGS_KERNEL_CODE,
-               num_pages);
+
+    kmap_pages(
+        (void*)kernel_start_addr - KERNEL_IMAGE_START,
+        (void*)vaddr,
+        PTE_FLAGS_KERNEL_CODE,
+        num_pages);
 
     // map (rodata start to rodata end) to
     // KERNEL_BASED_PHYS_TO_VIRT(_rodata_start)
+
     const uint64_t rodata_section_size = rodata_end_addr - rodata_start_addr;
     num_pages = rodata_section_size / PAGE_SIZE;
-    vaddr = KERNEL_BASED_PHYS_TO_VIRT(rodata_start_addr);
-    kmap_pages((void*)rodata_start_addr, (void*)vaddr,
-               0ULL | PTE_PRESENT | PTE_NX | PTE_GLOBAL, num_pages);
+
+    vaddr = rodata_start_addr;
+    // vaddr = KERNEL_BASED_PHYS_TO_VIRT(rodata_start_addr);
+
+    kmap_pages(
+        (void*)rodata_start_addr - KERNEL_IMAGE_START,
+        (void*)vaddr,
+        0ULL | PTE_PRESENT | PTE_NX | PTE_GLOBAL,
+        num_pages);
 
     // map (_data_start to _kernel_end) to
     // KERNEL_BASED_PHYS_TO_VIRT(_data_start)
+
     const uint64_t data_section_size = kernel_end_addr - data_start_addr;
     num_pages = data_section_size / PAGE_SIZE;
-    vaddr = KERNEL_BASED_PHYS_TO_VIRT(data_start_addr);
-    kmap_pages((void*)data_start_addr, (void*)vaddr, PTE_FLAGS_KERNEL_DATA,
-               num_pages);
 
-    uint64_t* virt_rsp =
-        map_stacks();
+    vaddr = data_start_addr;
+    // vaddr = KERNEL_BASED_PHYS_TO_VIRT(data_start_addr);
+
+    kmap_pages(
+        (void*)data_start_addr - KERNEL_IMAGE_START,
+        (void*)vaddr,
+        PTE_FLAGS_KERNEL_DATA,
+        num_pages);
+
+    // map buddy metadata
+    // lives after kernel end
+    // map 16kb after the kernel
+    vaddr += num_pages * PAGE_SIZE;
+    const void* pa = (void*)((uint64_t)vaddr - KERNEL_IMAGE_START);
+
+    kmap_pages(
+        pa,
+        (void*)vaddr,
+        PTE_PRESENT | PTE_NX | PTE_GLOBAL | PTE_WRITABLE,
+        4);
+
+    uint64_t* virt_rsp = map_stacks();
     // map stack
     map_direct_mapping();
-    identity_map_rip();
+    map_boot_memory();
 
     map_framebuffer();
     // add VBE framebuffer to direct map
 
     load_pmlt_cr3(kernel_pml4t); // mov cr3, pml4t
+                                 // bootloader pml4t is discarded in here
+    phys_map_offset = DIRECT_MAP_START;
 
     const boot_vbe_handoff* vbe_info_local =
         (const boot_vbe_handoff*)(vbe_handoff_address);

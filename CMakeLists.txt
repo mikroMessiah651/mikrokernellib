@@ -80,6 +80,7 @@ set(KERNEL_CFLAGS
     -O0
     -Wall
     -Wextra
+    -mcmodel=kernel
 )
 
 # Extra flags added for C++ sources (no RTTI, no exceptions in kernel code)
@@ -149,7 +150,10 @@ set(KERNEL_CSRCS
     ${KERNEL_SRCDIR}/kmain.c
     ${KERNEL_SRCDIR}/paging.c
     ${KERNEL_SRCDIR}/vm.c
-    
+    ${KERNEL_SRCDIR}/pmap.c
+    ${KERNEL_SRCDIR}/mapped_phys_kmalloc.c
+    ${KERNEL_SRCDIR}/virt_kmalloc.c
+    ${KERNEL_SRCDIR}/per_cpu.c
 )
 
 set(KERNEL_ASMSRCS
@@ -250,10 +254,19 @@ add_custom_command(
 add_custom_target(disk ALL DEPENDS ${DISK_IMG})
 
 # ─── QEMU run targets ─────────────────────────────────────────────────────────
+#
+# CPU model: stage 2 requires 1GB pages (PDPE1GB) for the 4GB low-memory
+# identity map and refuses to boot without them. QEMU's default "qemu64" model
+# does not advertise CPUID.80000001:EDX[26], so the loader bails out to
+# long_mode_unsupported and the screen stays blank. "max" advertises it.
+# "qemu64,+pdpe1gb" also works if you need the rest of the baseline model.
+
+set(QEMU_CPU max CACHE STRING "QEMU -cpu model (must advertise PDPE1GB)")
 
 if(QEMU)
     add_custom_target(run
         COMMAND ${QEMU}
+            -cpu ${QEMU_CPU}
             -drive format=raw,file=${DISK_IMG}
             -m 256M
             -no-reboot
@@ -266,6 +279,7 @@ if(QEMU)
 
     add_custom_target(run-debug
         COMMAND ${QEMU}
+            -cpu ${QEMU_CPU}
             -drive format=raw,file=${DISK_IMG}
             -m 256M
             -no-reboot
@@ -305,6 +319,10 @@ add_library(kernel_ide OBJECT EXCLUDE_FROM_ALL
     src/mikroKernellib/kmain.c
     src/mikroKernellib/paging.c
     src/mikroKernellib/vm.c
+    src/mikroKernellib/pmap.c
+    src/mikroKernellib/mapped_phys_kmalloc.c
+    src/mikroKernellib/virt_kmalloc.c
+    src/mikroKernellib/per_cpu.c
 )
 
 target_compile_options(kernel_ide PRIVATE ${KERNEL_CFLAGS})

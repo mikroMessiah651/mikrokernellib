@@ -3,16 +3,13 @@
  */
 
 #include "include/rb_tree.h"
-#include "include/spinlocks.h"
 #include "include/vesa_graphics_lib.h"
 #include <stdbool.h>
 #include <stdint.h>
 
-// TODO: add spinlocks, pass a tree_lock to each function to acquire and release
-// leave NULL if no lock is needed for some reason
 // rb_delete(.., spinlock_t tree_lock);
 
-void rb_print_tree(struct rb_node** root, int* row, int col,
+void rb_print_tree(struct rb_node** root, int* row, const int col,
                    uint64_t (*addr_of_node)(struct rb_node*)) {
     struct rb_node* x = *root;
     if (x == NULL)
@@ -27,7 +24,7 @@ void rb_print_tree(struct rb_node** root, int* row, int col,
     rb_print_tree(&x->left, row, col + 4, addr_of_node);
 }
 
-static inline void rb_rotate_left(struct rb_node** root, struct rb_node* node) {
+static void rb_rotate_left(struct rb_node** root, struct rb_node* node) {
     struct rb_node* tmp = node->right;
     node->right = tmp->left;
     if (tmp->left != NULL)
@@ -50,8 +47,8 @@ static inline void rb_rotate_left(struct rb_node** root, struct rb_node* node) {
     node->parent = tmp;
 }
 
-static inline void rb_rotate_right(struct rb_node** root,
-                                   struct rb_node* node) {
+static void rb_rotate_right(struct rb_node** root,
+                            struct rb_node* node) {
     struct rb_node* tmp = node->left;
     node->left = tmp->right;
     if (tmp->right != NULL)
@@ -79,7 +76,7 @@ static struct rb_node* rb_find_exact(struct rb_node** root, struct rb_node* key,
                                                 struct rb_node*)) {
     struct rb_node* current = *root;
     while (current != NULL) {
-        int result = cmp(key, current);
+        const int result = cmp(key, current);
         if (result < 0) {
             current = current->left;
         } else if (result > 0) {
@@ -98,7 +95,7 @@ static struct rb_node* rb_minimum(struct rb_node* node) {
     return node;
 }
 
-static inline void rb_transplant(struct rb_node** root, struct rb_node* node,
+static inline void rb_transplant(struct rb_node** root, const struct rb_node* node,
                                  struct rb_node* replacement) {
     if (node->parent == NULL) {
         *root = replacement;
@@ -176,7 +173,7 @@ struct rb_node* rb_insert(struct rb_node** root, struct rb_node* node,
 
     while (current != NULL) {
         parent = current;
-        int result = cmp(node, current);
+        const int result = cmp(node, current);
         if (result < 0) {
             // node.field < current.field
             current = current->left;
@@ -190,11 +187,12 @@ struct rb_node* rb_insert(struct rb_node** root, struct rb_node* node,
     }
     if (parent == NULL) {
         *root = node;
+        node->parent = NULL;
         node->color = RB_BLACK;
         return node;
     }
 
-    int result = cmp(node, parent);
+    const int result = cmp(node, parent);
     if (result < 0) {
         parent->left = node;
     } else if (result > 0) {

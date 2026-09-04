@@ -101,15 +101,15 @@ void __init_idt() {
     idt_load(&idtr);
 }
 
-// marked with one udnerscore to show it is a vm-reload function
+// marked with one underscore to show it is a vm-reload function
 void _reload_idt_virtual(void) {
-    // Translate physical idt[] address to its kernel virtual mapping
-    idtr.base = (uint64_t)KERNEL_BASED_PHYS_TO_VIRT(idt);
+    // idt[] address should be virtual via linker
+    idtr.base = (uint64_t)(idt);
 
     // Re-install all gates with virtual handler addresses
     for (int i = 0; i < 32; i++) {
         uint64_t virt_handler =
-            (uint64_t)KERNEL_BASED_PHYS_TO_VIRT(isr_stubs[i]);
+            (uint64_t)(isr_stubs[i]);
         idt_set_gate(i, virt_handler, 0x08, (i == 3) ? 0x8f : 0x8e);
     }
 

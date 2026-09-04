@@ -90,18 +90,18 @@ void* vm_mmap(void* addr, size_t length, int prot, int flags, int fd,
     // mmap() and switches from userland privilege to kernel mode we need to
     // follow current task_struct to know which VMA rb-tree root to modify
 
-    struct task_struct* current = get_current_task();
-    struct process_memory* proc_mm = current->proc_mm;
-    struct rb_node* rb_root = proc_mm->vma_tree;
+    // struct task_struct* current = get_current_task();
+    // struct task_mm* proc_mm = current->proc_mm;
+    // struct rb_node* rb_root = proc_mm->vma_tree;
 
     // we do not need to actually map anything
     // in demand paging mmap just adds the vma to the tree but whenever memory
     // in that region is accessed the page fault handler will map the physical
-    // page to the process as demanded
+    // page to the process as demanded, depends on mapping
 }
 
 void vm_handle_page_fault(uint64_t addr) {
-    struct task_struct* current = get_current_task();
-    struct process_memory* proc_mm = current->proc_mm;
-    struct rb_node* rb_root = proc_mm->vma_tree;
+    // struct task_struct* current = get_current_task();
+    // struct task_mm* proc_mm = current->proc_mm;
+    // struct rb_node* rb_root = proc_mm->vma_tree;
 }

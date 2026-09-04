@@ -13,9 +13,9 @@ typedef struct vma {
     struct rb_node node;
 } vma_t;
 
-struct proc_memory {
+struct task_mm {
     struct rb_node* vma_tree;
-    spinlock_t lock;
+    spinlock_t* lk;
 };
 
 void vm_handle_page_fault(uint64_t addr);

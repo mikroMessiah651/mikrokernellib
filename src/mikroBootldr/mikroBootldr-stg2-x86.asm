@@ -18,7 +18,6 @@ bits 16
 
 jmp .start
 
-
 section .text
 
 ; dl holds BootDrive
@@ -28,7 +27,6 @@ section .text
 ; stack setup: ss = 0x8000, sp = 0x0000, bp = 0x0000
 ; stage 2 loaded at 0x0000:0x7e00, es = 0x0000, bx = 0x7e00
 ; cs:ip = 0x0000:0x7e00, probably
-
 
 .start:
 
@@ -103,7 +101,7 @@ section .text
 
     .e820_loop:
 
-    mov eax, 0xE820
+    mov eax, 0xe820
     mov ecx, 24         ; 24 bytes
     int 0x15
 
@@ -151,7 +149,7 @@ section .text
     int 0x10
 
     cmp ax, 0x004f
-    jne .vbe_failure
+    jne vbe_failure
 
     ; now iterate over the list at [0x3000 + 0x0e]
     ; and look for 1280x720, 32 bytes per pixel,
@@ -164,7 +162,7 @@ section .text
     mov word cx, [es:si] ; cx = mode number
 
     cmp cx, 0xffff
-    je .vbe_failure
+    je vbe_failure
     ; 0xffff is the terminator for the mode list
 
     xor di, di
@@ -227,7 +225,7 @@ section .text
     int 0x10
 
     cmp ax, 0x004f
-    jne .vbe_failure
+    jne vbe_failure
 
     xor ax, ax
     mov es, ax
@@ -235,20 +233,20 @@ section .text
 .a20:
     ;now our task is to enable the A20 line and load a gdt and transition to protected mode
     ; ax = 0
-    call .test_A20
+    call test_a20
     ; ax = 0 -> disabled A20, ax = 1 -> enabled A20
     cmp ax, 0
-    jne .enabled_A20
+    jne enabled_a20
 
-.enable_A20_bios:
+enable_a20_bios:
 
     mov ax, 0x2401          ; Enable A20 function
     int 0x15                ; BIOS interrupt
-    jnc .enabled_A20
+    jnc enabled_a20
     ; if carry flag is set than there is an error and we should use fast A20
-    call .load_fast_A20
+    call load_fast_a20
 
-.enabled_A20:
+enabled_a20:
 
     xor ax, ax
     mov ds, ax
@@ -264,16 +262,16 @@ section .text
     jmp CODE_SEG32:protected_mode_start
     ; far jmp to 32 bit code
 
-.load_fast_A20:
+load_fast_a20:
     in al, 0x92             ; Read System Control Port A
     test al, 2              ; Check if already enabled
-    jnz .enabled_A20
+    jnz enabled_a20
     or al, 2                ; Set bit 1
     and al, 0xFE            ; Clear bit 0 (don't reset system!)
     out 0x92, al            ; Write back
     ret
 
-.test_A20:
+test_a20:
 
     pushf
     push ds
@@ -318,8 +316,8 @@ section .text
     popf
     ret
 
-.vbe_failure:
-; TODO add actual error handling for vbe
+vbe_failure:
+; TODO add actual error handling
     cli
     jmp $
 
@@ -339,7 +337,7 @@ protected_mode_start:
     mov ebp, 0
     ; now check for cpuid support for long mode
 
-.check_CPUID:
+check_cpuid:
 
     pushfd ; push EFLAGS
     pop eax ; put EFLAGS in eax
@@ -358,111 +356,110 @@ protected_mode_start:
     popfd
     ; if eax == ecx -> uncsuccesfully flipped -> not supported
     xor eax, ecx
-    jz .long_mode_unsupported
+    jz long_mode_unsupported
     ; if we got here CPUID instruction supported
     ; we need to check if the extended function is supported
-.query_long_mode:
+query_long_mode:
+    ; query 1gb pages
+    ; for now 1gb pages are a must for this to boot, for i am using them in the 4GB identity map for low memory
+    push edx
+
+    mov eax, 0x80000000
+    cpuid
+
+    cmp eax, 0x80000001
+    jb long_mode_unsupported
+
+    mov eax, 0x80000001
+    cpuid
+
+    bt edx, 26
+    setc al
+    movzx eax, al
+
+    cmp eax, 1
+    jne long_mode_unsupported
+
+    pop edx
 
     mov eax, CPUID_EXTENSIONS
     cpuid
     cmp eax, CPUID_EXT_FEATURES
-    jb .long_mode_unsupported
+    jb long_mode_unsupported
     ; if we got here, we can check for long mode support
     mov eax, CPUID_EXT_FEATURES
     cpuid
     test edx, CPUID_EDX_EXT_FEAT_LM
-    jz .long_mode_unsupported
+    jz long_mode_unsupported
 
-.setup_paging:
-    ; Zero all page table space: PML4T + PDPT + MAX_PDTS PDTs
+setup_paging:
     mov edi, PML4T_ADDR
     mov cr3, edi
+   
     xor eax, eax
-    mov ecx, (2 + MAX_PDTS) * PAGE_TABLE_DWORDS
-    rep stosd
 
-    ; PML4T[0] -> PDPT
-    mov dword [PML4T_ADDR], PDPT_ADDR | PT_PRESENT | PT_WRITABLE
+    mov ecx, 1024 * 5
+    rep stosd ; zero the page tables, 5 because there are 2 PDPTs
 
-    ; Walk entire e820 map to find highest physical address
-    mov esi, MMAP_ENTRIES
-    movzx ecx, word [MMAP_COUNT]
-    xor ebx, ebx             ; highest addr low
-    xor edx, edx             ; highest addr high
 
-.find_max_addr:
-    ; end = base + length (64-bit)
-    mov eax, [esi]
-    add eax, [esi + 8]
-    mov edi, [esi + 4]
-    adc edi, [esi + 12]
-    ; if edi:eax > edx:ebx, update max
-    cmp edi, edx
-    ja .update_max
-    jb .next_e820
-    cmp eax, ebx
-    jbe .next_e820
-.update_max:
+    ; identity map 4 GB using huge(1 GB) pages at the pdpt level
+    mov dword [PML4T_ADDR + 0 * 8], PDPT_ADDR | PTE_PRESENT | PTE_WRITABLE ; mov pml4t[0], (uint64_t)(pdpt | PTE_PRESENT | PTE_WRITABLE)
+    mov dword [PML4T_ADDR + 4], 0
 
-    mov edx, edi
-    mov ebx, eax
-.next_e820:
+    mov dword [PDPT_ADDR + 0 * 8], 0 | PTE_PRESENT | PTE_WRITABLE | PTE_PS      ; 1GB
+    mov dword [PDPT_ADDR + 4], 0 ; mov pdpt[0], 0 | PTE_WRITABLE | PTE_PRESENT | PTE_PS
+    
+    mov dword [PDPT_ADDR + 1 * 8], 0x40000000 | PTE_PRESENT | PTE_WRITABLE | PTE_PS ; 2GB
+    mov dword [PDPT_ADDR + 12], 0
 
-    add esi, 24
-    dec ecx
-    jnz .find_max_addr
+    mov dword [PDPT_ADDR + 2 * 8], 0x80000000 | PTE_PRESENT | PTE_WRITABLE | PTE_PS  ; 3GB
+    mov dword [PDPT_ADDR + 2 * 8 + 4], 0
 
-    ; edx:ebx = highest physical address from e820
-    ; Number of 2MB pages = ceil(highest / 2MB)
-    add ebx, 0x1FFFFF
-    adc edx, 0
-    shrd ebx, edx, 21
-    shr edx, 21
-    ; ebx = total 2MB pages needed
-    ; Number of PDTs = ceil(num_2mb_pages / 512)
-    add ebx, 511
-    shr ebx, 9
+    mov dword [PDPT_ADDR + 3 * 8], 0xc0000000 | PTE_PRESENT | PTE_WRITABLE | PTE_PS ; 4GB
+    mov dword [PDPT_ADDR + 3 * 8 + 4], 0
 
-    ; Clamp to [1, MAX_PDTS] — at least 1 for kernel/VGA
-    test ebx, ebx
-    jnz .cap_pdts
-    inc ebx
-.cap_pdts:
+map_kernel_half:
+    ; map high addresses to low kernel addresses
+    ; for high symbols to work with low code
+    ; then make the linker script link for hig addresses
+    ; use 4kb PT pages, indices are: pml4t[511], pdpt[510], pd[0], pt[0]
+    mov dword [PML4T_ADDR + 511 * 8], SECOND_PDPT_ADDR | PTE_PRESENT | PTE_WRITABLE
+    mov dword [PML4T_ADDR + 511 * 8 + 4], 0
 
-    cmp ebx, MAX_PDTS
-    jbe .pdts_ok
-    mov ebx, MAX_PDTS
-.pdts_ok:
+    mov dword [SECOND_PDPT_ADDR + 510 * 8], PD_ADDR | PTE_PRESENT | PTE_WRITABLE
+    mov dword [SECOND_PDPT_ADDR + 510 * 8 + 4], 0
 
-    push ebx
+    mov dword [PD_ADDR], PT_ADDR | PTE_PRESENT | PTE_WRITABLE
+    mov dword [PD_ADDR + 4], 0
+    
+    push edx
+    push eax
+    push ecx
 
-    ; Wire PDPT[0..n-1] -> PDT[0..n-1]
-    mov edi, PDPT_ADDR
-    mov eax, PDT_BASE | PT_PRESENT | PT_WRITABLE
-    mov ecx, ebx
-.wire_pdpt:
+    xor ecx, ecx
+    xor edx, edx
+    mov edx, 0 | PTE_PRESENT | PTE_WRITABLE | PTE_NX
+    mov eax, 0
+cover_pt_loop:
+    push eax
+    or eax, edx
 
-    mov [edi], eax
+    mov dword [PT_ADDR + ecx * 8], eax
+    mov dword [PT_ADDR + ecx * 8 + 4], 0
+    
+    pop eax
     add eax, 0x1000
-    add edi, SIZEOF_PT_ENTRY
-    dec ecx
-    jnz .wire_pdpt
+    inc ecx
+    cmp ecx, 512
+    jne cover_pt_loop
+    ; loop covers pt[0..511] as needed
 
-    ; Fill all PDT entries with 2MiB identity-map huge pages
     pop ecx
-    shl ecx, 9               ; total entries = num_pdts * 512
-    mov edi, PDT_BASE
-    mov ebx, PT_PRESENT | PT_WRITABLE | PT_PS
-    xor ebp, ebp             ; high 32 bits of physical frame address
-.fill_pdts:
+    pop eax
+    pop edx
 
-    mov [edi], ebx
-    mov [edi + 4], ebp
-    add ebx, 0x200000
-    adc ebp, 0
-    add edi, SIZEOF_PT_ENTRY
-    dec ecx
-    jnz .fill_pdts
+
+transition_to_lm:
 
     mov eax, cr4
     or eax, 0x20 ; 00100000b
@@ -486,7 +483,7 @@ protected_mode_start:
     ; far jump to 64 bits code
     jmp CODE_SEG64:long_mode_start
 
-.long_mode_unsupported:
+long_mode_unsupported:
     jmp $
 
 
@@ -512,7 +509,8 @@ long_mode_start:
     xor r9, r9
 
     ; jmp to kernel
-    jmp 0x13000
+    ; jmp 0x13000
+    jmp KERNEL_IMAGE_START + KERNEL_PHYS_START
     cli
     hlt
     jmp $
@@ -558,14 +556,19 @@ CPUID_EDX_EXT_FEAT_LM equ 1 << 29   ; if this is set, the CPU supports long mode
 
 PML4T_ADDR        equ 0x9000
 PDPT_ADDR         equ 0xa000
-PDT_BASE          equ 0xb000     ; PDTs allocated consecutively from here
-MAX_PDTS          equ 8          ; space for 8 PDTs (8GB) before kernel at 0x13000
+SECOND_PDPT_ADDR  equ 0xb000
+PD_ADDR           equ 0xc000
+PT_ADDR           equ 0xd000
 
-PT_PRESENT        equ 1          ; page present
-PT_WRITABLE       equ 2          ; page read/write
-PT_PS             equ (1 << 7)   ; 2MB huge page (Page Size bit in PDT entry)
+PTE_PRESENT        equ 1          ; page present
+PTE_WRITABLE       equ 2          ; page read/write
+PTE_PS             equ (1 << 7)   ; 2MB huge page (Page Size bit in PDT entry)
+PTE_NX             equ 0x8000000000000000
 
-SIZEOF_PT_ENTRY   equ 8
+KERNEL_IMAGE_START equ 0xFFFFFFFF80000000
+KERNEL_PHYS_START equ 0x13000
+
+SIZEOF_PTE        equ 8
 PAGE_TABLE_DWORDS equ 1024       ; one 4KB page table = 1024 dwords
 
 MMAP_ENTRIES      equ 0x5000

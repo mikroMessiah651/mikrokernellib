@@ -16,3 +16,5 @@ void kmap_pages(const void* paddr, const void* vaddr, const uint64_t flags,
 
 void kunmap_pages(const void* paddr, const void* vaddr, const uint64_t flags,
                   const uint64_t num_pages);
+
+void unmap_boot_memory();

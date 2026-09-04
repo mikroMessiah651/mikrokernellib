@@ -4,6 +4,7 @@
  */
 
 #include "include/mmu.h"
+#include "include/mapped_phys_kmalloc.h"
 #include "include/mikroKernellib-common.h"
 #include "include/phys_kmalloc.h"
 #include <stdbool.h>
@@ -31,12 +32,18 @@ static inline bool is_empty(const uint64_t* page_directory) {
     return true;
 }
 
+static uint64_t phys_map_offset = 0;
+
+#define mapped_ptr_deref(ptr) ((__typeof__(ptr))((uint64_t)(ptr) + phys_map_offset))
+
 // ARE WE TOUCHING PTEs WITH NO LOCK????!!!
 
 void map_page(uint64_t* pml4t, const void* paddr, const void* vaddr,
               const uint64_t flags) {
     if (flags & PTE_HUGE_PAGE)
-        PANIC("INCORRECTLY MAPPED HUGE PAGE WITH REGULAR MAP PAGE FUNCTION\0");
+        map_huge_page(pml4t, paddr, vaddr, flags);
+    return;
+    // PANIC("INCORRECTLY MAPPED HUGE PAGE WITH REGULAR MAP PAGE FUNCTION\0");
 
     // align down to 4KB
     const uint64_t aligned_addr = (uint64_t)paddr & ~((uint64_t)PAGE_SIZE - 1);
@@ -48,8 +55,8 @@ void map_page(uint64_t* pml4t, const void* paddr, const void* vaddr,
     const uint64_t pt_idx = VIRT_TO_PT_IDX((uint64_t)vaddr);
 
     // wire pml4t...
-    if (!(pml4t[pml4t_idx] & PTE_PRESENT)) {
-        uint64_t* new_pdpt = (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
+    if (!((uint64_t*)((uint64_t)pml4t + phys_map_offset)[pml4t_idx] & PTE_PRESENT)) {
+        uint64_t* new_pdpt = (uint64_t*)mapped_phys_kmalloc(4096, BUDDY_ALLOC);
         if (new_pdpt == NULL)
             PANIC("Failed to allocate 4KiB page for PDPT\0");
         memset_pg(new_pdpt);
@@ -59,7 +66,7 @@ void map_page(uint64_t* pml4t, const void* paddr, const void* vaddr,
     uint64_t* pdpt = (uint64_t*)(pml4t[pml4t_idx] & PTE_ADDR_MASK);
 
     if (!(pdpt[pdpt_idx] & PTE_PRESENT)) {
-        uint64_t* new_pd = (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
+        uint64_t* new_pd = (uint64_t*)mapped_phys_kmalloc(4096, BUDDY_ALLOC);
         if (new_pd == NULL)
             PANIC("Failed to allocate 4KiB page for PD\0");
         memset_pg(new_pd);
@@ -69,7 +76,7 @@ void map_page(uint64_t* pml4t, const void* paddr, const void* vaddr,
     uint64_t* pd = (uint64_t*)(pdpt[pdpt_idx] & PTE_ADDR_MASK);
 
     if (!(pd[pd_idx] & PTE_PRESENT)) {
-        uint64_t* new_pt = (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
+        uint64_t* new_pt = (uint64_t*)mapped_phys_kmalloc(4096, BUDDY_ALLOC);
         if (new_pt == NULL)
             PANIC("Failed to allocate 4KiB page for PT\0");
         memset_pg(new_pt);
@@ -126,15 +133,15 @@ void unmap_page(uint64_t* pml4t, const void* paddr, const void* vaddr) {
     // check if pt is empty
     if (is_empty(pt)) {
         pd[pd_idx] = 0ULL;
-        phys_kfree(pt, PAGE_SIZE, PAGEFRAME_FREE);
+        mapped_phys_kfree(pt, PAGE_SIZE, BUDDY_ALLOC);
         // check the pd
         if (is_empty(pd)) {
             pdpt[pdpt_idx] = 0ULL;
-            phys_kfree(pd, PAGE_SIZE, PAGEFRAME_FREE);
+            mapped_phys_kfree(pd, PAGE_SIZE, BUDDY_ALLOC);
             // check the pdpt
             if (is_empty(pdpt)) {
                 pml4t[pml4t_idx] = 0ULL;
-                phys_kfree(pdpt, PAGE_SIZE, PAGEFRAME_FREE);
+                mapped_phys_kfree(pdpt, PAGE_SIZE, BUDDY_ALLOC);
             }
         }
     }
@@ -152,7 +159,7 @@ void map_huge_page(uint64_t* pml4t, const void* paddr, const void* vaddr,
 
     // walk the page tables
     if (!(pml4t[pml4t_idx] & PTE_PRESENT)) {
-        uint64_t* new_pdpt = (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
+        uint64_t* new_pdpt = (uint64_t*)mapped_phys_kmalloc(4096, BUDDY_ALLOC);
         if (new_pdpt == NULL)
             PANIC("Failed to allocate 4KiB page for PDPT\0");
         memset_pg(new_pdpt);
@@ -162,7 +169,7 @@ void map_huge_page(uint64_t* pml4t, const void* paddr, const void* vaddr,
     uint64_t* pdpt = (uint64_t*)(pml4t[pml4t_idx] & PTE_ADDR_MASK);
 
     if (!(pdpt[pdpt_idx] & PTE_PRESENT)) {
-        uint64_t* new_pd = (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
+        uint64_t* new_pd = (uint64_t*)mapped_phys_kmalloc(4096, BUDDY_ALLOC);
         if (new_pd == NULL)
             PANIC("Failed to allocate 4KiB page for PD\0");
         memset_pg(new_pd);
@@ -209,11 +216,11 @@ void unmap_huge_page(uint64_t* pml4t, const void* paddr, const void* vaddr) {
     // check if the pd is empty
     if (is_empty(pd)) {
         pdpt[pdpt_idx] = 0ULL;
-        phys_kfree(pd, PAGE_SIZE, PAGEFRAME_FREE);
+        mapped_phys_kfree(pd, PAGE_SIZE, BUDDY_ALLOC);
         // check pdpt
         if (is_empty(pdpt)) {
             pml4t[pml4t_idx] = 0ULL;
-            phys_kfree(pdpt, PAGE_SIZE, PAGEFRAME_FREE);
+            mapped_phys_kfree(pdpt, PAGE_SIZE, BUDDY_ALLOC);
         }
     }
 }
@@ -240,7 +247,7 @@ void map_pages(uint64_t* pml4t, const void* paddr, const void* vaddr,
                 cur_pml4t_idx = new_pml4t_idx;
                 if (!(pml4t[cur_pml4t_idx] & PTE_PRESENT)) {
                     uint64_t* new_pdpt =
-                        (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
+                        (uint64_t*)mapped_phys_kmalloc(4096, BUDDY_ALLOC);
                     if (new_pdpt == NULL)
                         PANIC("Failed to allocate 4KiB page for PDPT\0");
                     memset_pg(new_pdpt);
@@ -255,7 +262,7 @@ void map_pages(uint64_t* pml4t, const void* paddr, const void* vaddr,
                 cur_pdpt_idx = new_pdpt_idx;
                 if (!(pdpt[cur_pdpt_idx] & PTE_PRESENT)) {
                     uint64_t* new_pd =
-                        (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
+                        (uint64_t*)mapped_phys_kmalloc(4096, BUDDY_ALLOC);
                     if (new_pd == NULL)
                         PANIC("Failed to allocate 4KiB page for PD\0");
                     memset_pg(new_pd);
@@ -292,7 +299,7 @@ void map_pages(uint64_t* pml4t, const void* paddr, const void* vaddr,
             cur_pml4t_idx = new_pml4t_idx;
             if (!(pml4t[cur_pml4t_idx] & PTE_PRESENT)) {
                 uint64_t* new_pdpt =
-                    (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
+                    (uint64_t*)mapped_phys_kmalloc(4096, BUDDY_ALLOC);
                 if (new_pdpt == NULL)
                     PANIC("Failed to allocate 4KiB page for PDPT\0");
                 memset_pg(new_pdpt);
@@ -308,7 +315,7 @@ void map_pages(uint64_t* pml4t, const void* paddr, const void* vaddr,
             cur_pdpt_idx = new_pdpt_idx;
             if (!(pdpt[cur_pdpt_idx] & PTE_PRESENT)) {
                 uint64_t* new_pd =
-                    (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
+                    (uint64_t*)mapped_phys_kmalloc(4096, BUDDY_ALLOC);
                 if (new_pd == NULL)
                     PANIC("Failed to allocate 4KiB page for PD\0");
                 memset_pg(new_pd);
@@ -324,7 +331,7 @@ void map_pages(uint64_t* pml4t, const void* paddr, const void* vaddr,
             cur_pd_idx = new_pd_idx;
             if (!(pd[cur_pd_idx] & PTE_PRESENT)) {
                 uint64_t* new_pt =
-                    (uint64_t*)phys_kmalloc(4096, PAGEFRAME_ALLOC);
+                    (uint64_t*)mapped_phys_kmalloc(4096, BUDDY_ALLOC);
                 if (new_pt == NULL)
                     PANIC("Failed to allocate 4KiB page for PT\0");
                 memset_pg(new_pt);
@@ -391,11 +398,11 @@ void unmap_pages(uint64_t* pml4t, const void* paddr, const void* vaddr,
             // check if the pd should be freed
             if (is_empty(pd)) {
                 pdpt[pdpt_idx] = 0ULL;
-                phys_kfree(pd, PAGE_SIZE, PAGEFRAME_FREE);
+                mapped_phys_kfree(pd, PAGE_SIZE, BUDDY_ALLOC);
                 // check pdpt
                 if (is_empty(pdpt)) {
                     pml4t[pml4t_idx] = 0ULL;
-                    phys_kfree(pdpt, PAGE_SIZE, PAGEFRAME_FREE);
+                    mapped_phys_kfree(pdpt, PAGE_SIZE, BUDDY_ALLOC);
                 }
             }
         }
@@ -452,18 +459,17 @@ void unmap_pages(uint64_t* pml4t, const void* paddr, const void* vaddr,
         if (is_empty(pt)) {
             // free the pt
             pd[pd_idx] = 0ULL;
-            phys_kfree(pt, PAGE_SIZE, PAGEFRAME_FREE);
+            mapped_phys_kfree(pt, PAGE_SIZE, BUDDY_ALLOC);
             // check the pd
             if (is_empty(pd)) {
                 pdpt[pdpt_idx] = 0ULL;
-                phys_kfree(pd, PAGE_SIZE, PAGEFRAME_FREE);
+                mapped_phys_kfree(pd, PAGE_SIZE, BUDDY_ALLOC);
                 // check pdpt
                 if (is_empty(pdpt)) {
                     pml4t[pml4t_idx] = 0ULL;
-                    phys_kfree(pdpt, PAGE_SIZE, PAGEFRAME_FREE);
+                    mapped_phys_kfree(pdpt, PAGE_SIZE, BUDDY_ALLOC);
                 }
             }
         }
     }
-    return;
 }
