@@ -127,8 +127,55 @@
 #define KERNEL_VIRT_OFFSET (KERNEL_IMAGE_START - KERNEL_PHYS_BASE)
 #define PHYS_TO_VIRT(p) ((uint64_t)(p) + KERNEL_VIRT_OFFSET)
 
+/* Direct-map translation for allocator-returned addresses.
+ *
+ * Every pointer the buddy/slab allocators hand out, and every table address
+ * stored inside a PTE, is a PHYSICAL address. Those are only dereferenceable
+ * directly while an identity map is authoritative:
+ *   - before load_pmlt_cr3(): the bootloader's 4GB identity map
+ *   - after  load_pmlt_cr3(): nothing but the low 16MB of map_boot_memory(),
+ *                             which unmap_boot_memory() then takes away
+ * Past that point they have to be reached through the direct map.
+ *
+ * phys_map_offset is 0 while the identity map is authoritative and becomes
+ * DIRECT_MAP_START immediately after our own CR3 is loaded. Stored values stay
+ * physical at all times and only the dereference is translated, so nothing has
+ * to be rewritten at the switch and structures built before it stay valid.
+ *
+ * Lives in .data, NOT .bss: .bss is NOBITS, is not part of kernel.bin and is
+ * never zeroed, so a .bss copy would start as whatever the BIOS left behind.
+ *
+ */
+extern uint64_t phys_map_offset;
+
+/* A physical address is always below 2^48; every kernel virtual address is at
+ * or above the PML4 kernel half base. So the compare tells the two kinds apart,
+ * which keeps the translation idempotent and makes it safe on the lists that
+ * legitimately mix both - a slab list threads physical slab descriptors onto a
+ * sentinel that lives in the kernel image.
+ *
+ * Written as a statement expression so ptr is evaluated exactly once, which
+ * matters because call sites nest these (directmap_p2v(directmap_p2v(x)->parent)).
+ */
+#define directmap_p2v(ptr)                                              \
+    __extension__({                                                     \
+        const uint64_t __dm_p = (uint64_t)(ptr);                        \
+        (__typeof__(ptr))((__dm_p < PML4_KERNEL_HALF_BASE)              \
+                              ? __dm_p + phys_map_offset                \
+                              : __dm_p);                                \
+    })
+// physical address -> currently dereferenceable pointer, type preserved.
+// Already-virtual pointers pass through untouched.
+
+#define directmap_p2v_deref(ptr) (*directmap_p2v(ptr))
+// deref through the direct map: directmap_p2v_deref(pt + idx) is pt[idx],
+// directmap_p2v_deref(node).left is node->left
+
 uint64_t pml5_detect(); // returns 0 (in rax) if pml5 isn't available, 1 if it
                         // is available
+
+void invlpg(const void* addr);
+
 uint64_t* get_current_core_cr3();
 void load_pmlt_cr3(uint64_t* cr3);
 
@@ -139,7 +186,7 @@ uint64_t* __init_mmu();
 
 void map_page(uint64_t* pml4t, const void* paddr, const void* vaddr,
               const uint64_t flags);
-void unmap_page(uint64_t* pml4t, const void* paddr, const void* vaddr);
+void unmap_page(const uint64_t* pml4t, const void* paddr, const void* vaddr);
 
 void map_huge_page(uint64_t* pml4t, const void* paddr, const void* vaddr,
                    const uint64_t flags);

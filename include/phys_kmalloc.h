@@ -77,7 +77,7 @@ typedef struct kmem_cache {
     slab_list_node full_slabs;
 } kmem_cache;
 
-kmem_cache* kmem_cache_create_sl(kmem_cache* cache, size_t size);
+kmem_cache* kmem_cache_create_sl(kmem_cache* cache, size_t object_size);
 void* kmem_cache_kalloc(kmem_cache* cache);
 void kmem_cache_kfree(kmem_cache* cache, void* object);
 

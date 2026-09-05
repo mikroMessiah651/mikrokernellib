@@ -35,21 +35,14 @@ extern mmap_entry_0xe820 mmap_bios_entries[];
 // uint64_t* pml5t_phys_addr = NULL;
 static uint64_t* kernel_pml4t = NULL;
 static struct rb_node* kernel_rb_root = NULL;
+// responsible for locking kernel pml4/vma tree modification
+static spinlock_t kernel_page_lock;
 
 static kmem_cache vma_cache;
 
 inline uint64_t vma_start_of_node(struct rb_node* x) {
     const vma_t* v = container_of(x, struct vma, node);
-    return v->vma_start;
-}
-
-// TODO: USE FUCKING SPINLOCKS
-// AND RETHINK ADDING VMAs ON EVERY MAP
-
-static offset_t phys_map_offset = 0;
-
-static inline void* pmap_to_virt(const void* p) {
-    return (void*)((uint64_t)p + phys_map_offset);
+    return directmap_p2v(v)->vma_start;
 }
 
 // rb_tree<vma_t> t;
@@ -63,16 +56,20 @@ static inline void rb_remove_vma(vma_t* v) {
     rb_delete(&kernel_rb_root, &v->node, vma_cmp);
 }
 
+// only use kmap_page/kmap_huge_page for mappings that literally ARE 1 page mappings
+// this is because every call to those functions, inserts a VMA node
 void kmap_page(const void* paddr, const void* vaddr, const uint64_t flags) {
-    vma_t* vma = mapped_kmem_cache_kalloc(&vma_cache);
+    vma_t* vma = kmem_cache_kalloc(&vma_cache);
     if (vma == NULL)
         PANIC("FAILED TO ALLOCATE VMA STRUCT IN KMAP_PAGE\0")
-    vma->vma_start = (uint64_t)vaddr;
-    vma->vma_end = (uint64_t)vaddr + PAGE_SIZE;
-    vma->vma_pte = (uint64_t)paddr | flags;
+    directmap_p2v(vma)->vma_start = (uint64_t)vaddr;
+    directmap_p2v(vma)->vma_end = (uint64_t)vaddr + PAGE_SIZE;
+    directmap_p2v(vma)->vma_pte = (uint64_t)paddr | flags;
 
+    spinlock_acquire(&kernel_page_lock);
     rb_insert_vma(vma);
     map_page(kernel_pml4t, paddr, vaddr, flags);
+    spinlock_release(&kernel_page_lock);
 }
 
 void kunmap_page(const void* paddr, const void* vaddr) {
@@ -80,23 +77,27 @@ void kunmap_page(const void* paddr, const void* vaddr) {
     if (vma == NULL)
         return;
 
+    spinlock_acquire(&kernel_page_lock);
     rb_remove_vma(vma);
-    mapped_kmem_cache_kfree(&vma_cache, vma);
+    kmem_cache_kfree(&vma_cache, vma);
     unmap_page(kernel_pml4t, paddr, vaddr);
+    spinlock_release(&kernel_page_lock);
 }
 
 void kmap_huge_page(const void* paddr, const void* vaddr,
                     const uint64_t flags) {
-    vma_t* vma = mapped_kmem_cache_kalloc(&vma_cache);
+    vma_t* vma = kmem_cache_kalloc(&vma_cache);
     if (vma == NULL) {
         PANIC("FAILED TO ALLOCATE HUGE VMA STRUCT IN KMAP_PAGE\0")
     }
-    vma->vma_start = (uint64_t)vaddr;
-    vma->vma_end = (uint64_t)vaddr + HUGE_PAGE_SIZE;
-    vma->vma_pte = (uint64_t)paddr | flags;
+    directmap_p2v(vma)->vma_start = (uint64_t)vaddr;
+    directmap_p2v(vma)->vma_end = (uint64_t)vaddr + HUGE_PAGE_SIZE;
+    directmap_p2v(vma)->vma_pte = (uint64_t)paddr | flags;
 
+    spinlock_acquire(&kernel_page_lock);
     rb_insert_vma(vma);
     map_huge_page(kernel_pml4t, paddr, vaddr, flags);
+    spinlock_release(&kernel_page_lock);
 }
 
 void kunmap_huge_page(const void* paddr, const void* vaddr) {
@@ -106,35 +107,42 @@ void kunmap_huge_page(const void* paddr, const void* vaddr) {
         return;
     }
 
+    spinlock_acquire(&kernel_page_lock);
     rb_remove_vma(vma);
-    mapped_kmem_cache_kfree(&vma_cache, vma);
+    kmem_cache_kfree(&vma_cache, vma);
     unmap_huge_page(kernel_pml4t, paddr, vaddr);
+    spinlock_release(&kernel_page_lock);
 }
 
 void kmap_pages(const void* paddr, const void* vaddr, const uint64_t flags,
                 const size_t num_pages) {
     if (flags & PTE_HUGE_PAGE) {
         // huge page mappings
-        vma_t* vma = mapped_kmem_cache_kalloc(&vma_cache);
+        vma_t* vma = kmem_cache_kalloc(&vma_cache);
         if (vma == NULL) {
             PANIC("FAILED TO ALLOCATE A VMA STRUCT IN KMAP_PAGES\0");
         }
-        vma->vma_start = (uint64_t)vaddr;
-        vma->vma_end = (uint64_t)vaddr + num_pages * HUGE_PAGE_SIZE;
-        vma->vma_pte = (uint64_t)paddr | flags;
+        directmap_p2v(vma)->vma_start = (uint64_t)vaddr;
+        directmap_p2v(vma)->vma_end = (uint64_t)vaddr + num_pages * HUGE_PAGE_SIZE;
+        directmap_p2v(vma)->vma_pte = (uint64_t)paddr | flags;
+
+        spinlock_acquire(&kernel_page_lock);
         rb_insert_vma(vma);
     } else {
         // 4KB pages
-        vma_t* vma = mapped_kmem_cache_kalloc(&vma_cache);
+        vma_t* vma = kmem_cache_kalloc(&vma_cache);
         if (vma == NULL) {
             PANIC("FAILED TO ALLOCATE A VMA STRUCT IN KMAP_PAGES\0");
         }
-        vma->vma_start = (uint64_t)vaddr;
-        vma->vma_end = (uint64_t)vaddr + num_pages * PAGE_SIZE;
-        vma->vma_pte = (uint64_t)paddr | flags;
+        directmap_p2v(vma)->vma_start = (uint64_t)vaddr;
+        directmap_p2v(vma)->vma_end = (uint64_t)vaddr + num_pages * PAGE_SIZE;
+        directmap_p2v(vma)->vma_pte = (uint64_t)paddr | flags;
+
+        spinlock_acquire(&kernel_page_lock);
         rb_insert_vma(vma);
     }
     map_pages(kernel_pml4t, paddr, vaddr, flags, num_pages);
+    spinlock_release(&kernel_page_lock);
 }
 
 void kunmap_pages(const void* paddr, const void* vaddr, const uint64_t flags,
@@ -145,9 +153,11 @@ void kunmap_pages(const void* paddr, const void* vaddr, const uint64_t flags,
         return;
     }
 
+    spinlock_acquire(&kernel_page_lock);
     rb_remove_vma(vma);
-    mapped_kmem_cache_kfree(&vma_cache, vma);
+    kmem_cache_kfree(&vma_cache, vma);
     unmap_pages(kernel_pml4t, paddr, vaddr, flags, num_pages);
+    spinlock_release(&kernel_page_lock);
 }
 
 
@@ -165,9 +175,9 @@ static void map_framebuffer() {
         (uint64_t)((uint64_t)vbe_info->framebuffer_address +
                    (uint32_t)vbe_info->pitch * vbe_info->height_px - 1);
 
-    uint64_t base_aligned = vbe_info->framebuffer_address & ~(PAGE_SIZE - 1);
-    uint64_t end_aligned = (fb_last + PAGE_SIZE) & ~(PAGE_SIZE - 1); // align up
-    uint64_t num_pages = (end_aligned - base_aligned) / PAGE_SIZE;
+    const uint64_t base_aligned = vbe_info->framebuffer_address & ~(PAGE_SIZE - 1);
+    const uint64_t end_aligned = (fb_last + PAGE_SIZE) & ~(PAGE_SIZE - 1); // align up
+    const uint64_t num_pages = (end_aligned - base_aligned) / PAGE_SIZE;
 
     kmap_pages((uint64_t*)base_aligned,
                (uint64_t*)((uint64_t)DIRECT_MAP_START + base_aligned),
@@ -177,13 +187,13 @@ static void map_framebuffer() {
 static uint64_t* map_stacks(void) {
     // returns virtual address to put in rsp
     // allocate first stack for current bootstrap processor
-    uint64_t* phys_stack_addr = (uint64_t*)mapped_phys_kmalloc(
+    uint64_t* phys_stack_addr = (uint64_t*)phys_kmalloc(
         4 * PAGE_SIZE, BUDDY_ALLOC); // allocate 16KB
     if (phys_stack_addr == NULL)
         PANIC("Failed to allocate 16KiB page for stack");
 
     for (uint32_t i = 0; i < 4; i++)
-        memset_pg((char*)phys_stack_addr + i * PAGE_SIZE);
+        memset_pg(directmap_p2v((char*)phys_stack_addr) + i * PAGE_SIZE);
 
     kmap_pages(phys_stack_addr, (void*)KERNEL_STACKS_START,
                PTE_FLAGS_KERNEL_DATA, 4);
@@ -205,7 +215,7 @@ static void map_direct_mapping(void) {
         const void* last_addr = (void*)((uint64_t)base_addr + size);
 
         // align UP physical address to 4KB
-        uint64_t base_addr_aligned =
+        const uint64_t base_addr_aligned =
             ((uint64_t)base_addr + PAGE_SIZE - 1) & ~((uint64_t)PAGE_SIZE - 1);
         // align DOWN last_addr
         const uint64_t last_addr_aligned =
@@ -222,7 +232,7 @@ static void map_direct_mapping(void) {
 
         if (huge_base >= huge_end) {
             // whole region fits in 4KB pages
-            uint64_t pte_num =
+            const uint64_t pte_num =
                 (last_addr_aligned - base_addr_aligned) / PAGE_SIZE;
             kmap_pages((void*)base_addr_aligned,
                        (void*)(DIRECT_MAP_START + base_addr_aligned),
@@ -266,14 +276,16 @@ void unmap_boot_memory() {
 
 
 uint64_t* __init_mmu(void) {
+    spinlock_init(&kernel_page_lock);
+
     // initialise kernel rb-tree and vma cache
     kmem_cache_create_sl(&vma_cache, sizeof(vma_t));
 
-    kernel_pml4t = (uint64_t*)mapped_phys_kmalloc(PAGE_SIZE, BUDDY_ALLOC);
+    kernel_pml4t = (uint64_t*)phys_kmalloc(PAGE_SIZE, BUDDY_ALLOC);
     if (kernel_pml4t == NULL) {
         PANIC("FAILED TO ALLOCATE PML4T ROOT FOR THE KERNEL\0");
     }
-    memset_pg(kernel_pml4t);
+    memset_pg(directmap_p2v(kernel_pml4t));
 
     uint64_t vaddr = kernel_start_addr;
 
@@ -341,6 +353,12 @@ uint64_t* __init_mmu(void) {
 
     load_pmlt_cr3(kernel_pml4t); // mov cr3, pml4t
                                  // bootloader pml4t is discarded in here
+
+    // From here on the bootloader's 4GB identity map is gone, so a raw physical
+    // address is no longer a usable pointer. Everything the allocators handed
+    // out is reached through the direct map instead; stored values are
+    // untouched, only dereferences translate. Must come after the CR3 load:
+    // the direct map only exists in the table we just installed.
     phys_map_offset = DIRECT_MAP_START;
 
     const boot_vbe_handoff* vbe_info_local =

@@ -13,13 +13,11 @@ typedef struct vma {
     struct rb_node node;
 } vma_t;
 
-struct task_mm {
-    struct rb_node* vma_tree;
-    spinlock_t* lk;
-};
-
 void vm_handle_page_fault(uint64_t addr);
 
-vma_t* rb_find_vma(struct rb_node** root, uint64_t addr);
+// void* vm_mmap();
+
+vma_t*
+rb_find_vma(struct rb_node** root, uint64_t addr);
 
 int vma_cmp(struct rb_node* a, struct rb_node* b);

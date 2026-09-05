@@ -17,6 +17,10 @@ static void khello(void) {
 }
 
 __attribute__((section(".text.entry"))) void start_kernel(void) {
+    // snapshot the bootloader's VBE handoff out of low memory before anything
+    // can tear the identity map down under us
+    __init_vbe_handoff();
+
     khello();
     // functions marked with __init are run only in single-threaded Bootstrap
     // processor mode and therefore do not require a lock

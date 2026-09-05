@@ -1,5 +1,4 @@
-#ifndef KSTRINGS_H
-#define KSTRINGS_H
+#pragma once
 
 #include <stddef.h>
 
@@ -17,4 +16,4 @@ void kstring_strcpy(const char* s1, void* dst, size_t dst_size);
  * NULL is treated as less than any non-NULL string. */
 int kstring_strcmp(const char* s1, const char* s2);
 
-#endif
+void* memset(void* ptr, int value, size_t num);

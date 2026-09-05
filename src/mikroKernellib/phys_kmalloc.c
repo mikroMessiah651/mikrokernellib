@@ -6,11 +6,10 @@
 
 #include "include/phys_kmalloc.h"
 #include "include/kmath.h"
-#include "include/mapped_phys_kmalloc.h"
+#include "include/mmu.h"
 #include "include/mikroKernellib-common.h"
 #include "include/spinlocks.h"
 #include "include/vesa_graphics_lib.h"
-#include "include/vm.h"
 
 #define NUM_MAX_ORDER (metadata->max_order + 1) // 11
 
@@ -19,8 +18,6 @@ uint64_t kernel_end = (uint64_t)&_kernel_end;
 
 static spinlock_t buddy_lock;
 static spinlock_t slab_lock;
-
-static offset_t phys_map_offset = 0;
 
 static inline void memset_lb(void* ptr, const uint8_t val,
                              const uint64_t size) {
@@ -160,8 +157,10 @@ void __init_buddy() {
             buddy_chunk* next_chunk =
                 (struct buddy_chunk*)((uint8_t*)current_addr +
                                       (1ULL << order) * PAGE_SIZE);
-            current_addr->next = i == count - 1 ? NULL : next_chunk;
-            current_addr->prev =
+            // current_addr is physical: the links live inside the free page
+            buddy_chunk* cur = directmap_p2v(current_addr);
+            cur->next = i == count - 1 ? NULL : next_chunk;
+            cur->prev =
                 i == 0 ? NULL
                        : (buddy_chunk*)((uint8_t*)current_addr -
                                         (1ULL << order) * PAGE_SIZE);
@@ -227,11 +226,13 @@ void* buddy_kalloc(const size_t size) {
             continue;
         }
         // pop block from free list
+        // free-list links live inside the free pages, which are physical
         buddy_chunk* chunk = metadata->free_lists_ptr[idx];
-        metadata->free_lists_ptr[idx] = chunk->next;
-        if (chunk->next != NULL)
-            chunk->next->prev = NULL;
-        chunk->next = NULL;
+        buddy_chunk* chunk_v = directmap_p2v(chunk);
+        metadata->free_lists_ptr[idx] = chunk_v->next;
+        if (chunk_v->next != NULL)
+            directmap_p2v(chunk_v->next)->prev = NULL;
+        chunk_v->next = NULL;
 
         // split
         for (int level = idx; level > order; level--) {
@@ -239,15 +240,17 @@ void* buddy_kalloc(const size_t size) {
                 (buddy_chunk*)((uint8_t*)chunk +
                                (1ULL << (level - 1)) *
                                    PAGE_SIZE); // buddy after split
-            buddy->prev = NULL;                // will be at head so prev must be null
-            buddy->next =
+            buddy_chunk* buddy_v = directmap_p2v(buddy);
+            buddy_v->prev = NULL;              // will be at head so prev must be null
+            buddy_v->next =
                 metadata
                     ->free_lists_ptr[level - 1]; // since we are inserting at
                                                  // head of the lower list, next
                                                  // must be the current head
-            if (buddy->next != NULL)
-                buddy->next->prev = buddy; // if it's the only chunk in the list
-                                           // of current order
+            if (buddy_v->next != NULL)
+                directmap_p2v(buddy_v->next)->prev =
+                    buddy; // if it's the only chunk in the list
+                           // of current order
             metadata->free_lists_ptr[level - 1] =
                 buddy; // free lists ptr points to buddy
         }
@@ -290,14 +293,15 @@ void buddy_kfree(void* chunk, const size_t size) {
 
         // remove buddy from free list
         spinlock_acquire(&buddy_lock);
-        if (buddy->prev != NULL)
-            buddy->prev->next = buddy->next;
+        buddy_chunk* buddy_v = directmap_p2v(buddy);
+        if (buddy_v->prev != NULL)
+            directmap_p2v(buddy_v->prev)->next = buddy_v->next;
         else
-            metadata->free_lists_ptr[order] = buddy->next;
-        if (buddy->next != NULL)
-            buddy->next->prev = buddy->prev;
-        buddy->next = NULL;
-        buddy->prev = NULL;
+            metadata->free_lists_ptr[order] = buddy_v->next;
+        if (buddy_v->next != NULL)
+            directmap_p2v(buddy_v->next)->prev = buddy_v->prev;
+        buddy_v->next = NULL;
+        buddy_v->prev = NULL;
 
         // coalesced block is at the lower address
         if ((uint64_t)buddy < (uint64_t)chunk)
@@ -310,10 +314,11 @@ void buddy_kfree(void* chunk, const size_t size) {
     spinlock_acquire(&buddy_lock);
     // insert coalesced block into free list at final order
     buddy_chunk* block = chunk;
-    block->prev = NULL;
-    block->next = metadata->free_lists_ptr[order];
-    if (block->next != NULL)
-        block->next->prev = block;
+    buddy_chunk* block_v = directmap_p2v(block);
+    block_v->prev = NULL;
+    block_v->next = metadata->free_lists_ptr[order];
+    if (block_v->next != NULL)
+        directmap_p2v(block_v->next)->prev = block;
     metadata->free_lists_ptr[order] = block;
     spinlock_release(&buddy_lock);
 }
@@ -433,11 +438,13 @@ static status_t kmem_cache_grow(kmem_cache* cache) {
     // grows a kmem_cache with another buddy_alloc((1ULL <<
     // kmem_cache->slab_order))
     slab_descriptor* descriptor =
-        (slab_descriptor*)mapped_buddy_kalloc((1ULL << cache->slab_order) * PAGE_SIZE);
+        (slab_descriptor*)buddy_kalloc((1ULL << cache->slab_order) * PAGE_SIZE);
     if (descriptor == NULL)
         return STATUS_ERROR;
-    descriptor->cache = cache;
-    descriptor->inuse_num = 0;
+    // descriptor is physical: it sits at the head of the slab page itself
+    slab_descriptor* desc_v = directmap_p2v(descriptor);
+    desc_v->cache = cache;
+    desc_v->inuse_num = 0;
 
     // thread a freelist and insert descriptor to previous slab's list
     const uint64_t first_object_offset =
@@ -450,23 +457,23 @@ static status_t kmem_cache_grow(kmem_cache* cache) {
         void* object_addr =
             (void*)((uint64_t)new_slab_first_object + idx * cache->object_size);
         if (idx < cache->objects_per_slab - 1) {
-            *(void**)object_addr =
+            directmap_p2v_deref((void**)object_addr) =
                 (void*)((uint64_t)object_addr +
                         cache->object_size); // setNext(object +
                                              // sizeof(object));
         } else {
-            *(void**)object_addr = NULL; // setNext(NULL);
+            directmap_p2v_deref((void**)object_addr) = NULL; // setNext(NULL);
         }
     }
-    descriptor->free_list = new_slab_first_object;
+    desc_v->free_list = new_slab_first_object;
     // void* next = *(void**)descriptor->free_list;
     // this is how you read 'descriptor->free_list->next'
     // since free_list is of type void*
 
     // add new slab_descriptor to free slabs list in kmem_cache
-    descriptor->slab_lists_node.next = cache->free_slabs.next;
-    descriptor->slab_lists_node.prev = &cache->free_slabs;
-    cache->free_slabs.next->prev = &descriptor->slab_lists_node;
+    desc_v->slab_lists_node.next = cache->free_slabs.next;
+    desc_v->slab_lists_node.prev = &cache->free_slabs;
+    directmap_p2v(cache->free_slabs.next)->prev = &descriptor->slab_lists_node;
     cache->free_slabs.next = &descriptor->slab_lists_node;
 
     return STATUS_OK;
@@ -497,38 +504,46 @@ void* kmem_cache_kalloc(kmem_cache* cache) {
                             slab_lists_node);
     }
     // by now we have a slab descriptor and only need to pop from its free list
+    // desc is physical (container_of is pure arithmetic); desc_v is the alias
+    // we may actually dereference. Addresses STORED back into the lists must
+    // stay physical, so those keep using desc.
+    slab_descriptor* desc_v = directmap_p2v(desc);
     void* ptr = NULL;
 
     // caller must check if returned ptr is null
-    ptr = desc->free_list;
+    ptr = desc_v->free_list;
     if (ptr != NULL)
-        desc->free_list = *(void**)ptr; // get_next
+        desc_v->free_list = directmap_p2v_deref((void**)ptr); // get_next
     else {
         spinlock_release(&slab_lock);
         return NULL;
     }
-    desc->inuse_num++;
-    if (desc->inuse_num == cache->objects_per_slab) {
+    desc_v->inuse_num++;
+    if (desc_v->inuse_num == cache->objects_per_slab) {
         // move from free (cache->objects_per_slab = 1) to full
         // or more probably: move from partial to full
-        desc->slab_lists_node.prev->next = desc->slab_lists_node.next;
-        desc->slab_lists_node.next->prev = desc->slab_lists_node.prev;
+        directmap_p2v(desc_v->slab_lists_node.prev)->next =
+            desc_v->slab_lists_node.next;
+        directmap_p2v(desc_v->slab_lists_node.next)->prev =
+            desc_v->slab_lists_node.prev;
 
         // insert desc at front of full slabs
-        desc->slab_lists_node.next = cache->full_slabs.next;
-        desc->slab_lists_node.prev = &cache->full_slabs;
-        cache->full_slabs.next->prev = &desc->slab_lists_node;
+        desc_v->slab_lists_node.next = cache->full_slabs.next;
+        desc_v->slab_lists_node.prev = &cache->full_slabs;
+        directmap_p2v(cache->full_slabs.next)->prev = &desc->slab_lists_node;
         cache->full_slabs.next = &desc->slab_lists_node;
-    } else if (desc->inuse_num == 1) {
+    } else if (desc_v->inuse_num == 1) {
         // move from free to partial
         // remove desc from free
-        desc->slab_lists_node.prev->next = desc->slab_lists_node.next;
-        desc->slab_lists_node.next->prev = desc->slab_lists_node.prev;
+        directmap_p2v(desc_v->slab_lists_node.prev)->next =
+            desc_v->slab_lists_node.next;
+        directmap_p2v(desc_v->slab_lists_node.next)->prev =
+            desc_v->slab_lists_node.prev;
 
         // insert at front of partial slabs
-        desc->slab_lists_node.next = cache->partial_slabs.next;
-        desc->slab_lists_node.prev = &cache->partial_slabs;
-        cache->partial_slabs.next->prev = &desc->slab_lists_node;
+        desc_v->slab_lists_node.next = cache->partial_slabs.next;
+        desc_v->slab_lists_node.prev = &cache->partial_slabs;
+        directmap_p2v(cache->partial_slabs.next)->prev = &desc->slab_lists_node;
         cache->partial_slabs.next = &desc->slab_lists_node;
     }
 
@@ -541,48 +556,52 @@ void kmem_cache_kfree(kmem_cache* cache, void* object) {
     const uint32_t slab_order = cache->slab_order;
     const uint32_t slab_size = PAGE_SIZE << slab_order;
     const uint64_t slab_base = (uint64_t)object & ~((uint64_t)slab_size - 1);
-    slab_descriptor* desc = (slab_descriptor*)slab_base;
+    slab_descriptor* desc = (slab_descriptor*)slab_base; // physical
+    slab_descriptor* desc_v = directmap_p2v(desc);
 
-    desc->inuse_num--;
-    if (desc->inuse_num == 0) {
+    desc_v->inuse_num--;
+    if (desc_v->inuse_num == 0) {
         // move slab from partial to free
         // remove from partial slabs
         // if cache->objects_per_slab = 1,
         // then this removes from full slabs and inserts to free slabs instead
-        desc->slab_lists_node.prev->next = desc->slab_lists_node.next;
-        desc->slab_lists_node.next->prev = desc->slab_lists_node.prev;
+        directmap_p2v(desc_v->slab_lists_node.prev)->next =
+            desc_v->slab_lists_node.next;
+        directmap_p2v(desc_v->slab_lists_node.next)->prev =
+            desc_v->slab_lists_node.prev;
 
         // insert to free slabs
-        desc->slab_lists_node.next = cache->free_slabs.next;
-        desc->slab_lists_node.prev = &cache->free_slabs;
-        cache->free_slabs.next->prev = &desc->slab_lists_node;
+        desc_v->slab_lists_node.next = cache->free_slabs.next;
+        desc_v->slab_lists_node.prev = &cache->free_slabs;
+        directmap_p2v(cache->free_slabs.next)->prev = &desc->slab_lists_node;
         cache->free_slabs.next = &desc->slab_lists_node;
-    } else if (desc->inuse_num == cache->objects_per_slab - 1) {
+    } else if (desc_v->inuse_num == cache->objects_per_slab - 1) {
         // move from full slabs to partial slabs
         // remove from full slabs
-        desc->slab_lists_node.prev->next = desc->slab_lists_node.next;
-        desc->slab_lists_node.next->prev = desc->slab_lists_node.prev;
+        directmap_p2v(desc_v->slab_lists_node.prev)->next =
+            desc_v->slab_lists_node.next;
+        directmap_p2v(desc_v->slab_lists_node.next)->prev =
+            desc_v->slab_lists_node.prev;
 
         // insert to partial slabs
-        desc->slab_lists_node.next = cache->partial_slabs.next;
-        desc->slab_lists_node.prev = &cache->partial_slabs;
-        cache->partial_slabs.next->prev = &desc->slab_lists_node;
+        desc_v->slab_lists_node.next = cache->partial_slabs.next;
+        desc_v->slab_lists_node.prev = &cache->partial_slabs;
+        directmap_p2v(cache->partial_slabs.next)->prev = &desc->slab_lists_node;
         cache->partial_slabs.next = &desc->slab_lists_node;
     }
 
-    *(void**)object = desc->free_list;
-    desc->free_list = object;
+    directmap_p2v_deref((void**)object) = desc_v->free_list;
+    desc_v->free_list = object;
     spinlock_release(&slab_lock);
 }
 
 void* slab_kalloc(const size_t size) {
     // select cache and then pop from the free/partial slab's free lists head
     // node doesn't yet handle caches outside the statically allocated caches
-    if (size > MAX_SLAB_ALLOC_SIZE)
-        return NULL;
+    if (size > MAX_SLAB_ALLOC_SIZE) return NULL;
     const uint32_t index = size_to_index(size);
-    if (index >= NUM_CACHES)
-        return NULL;
+
+    if (index >= NUM_CACHES) return NULL;
 
     kmem_cache* cache = &slab_caches[index];
     return kmem_cache_kalloc(cache);
@@ -597,7 +616,7 @@ void slab_kfree(void* object, const size_t size) {
     kmem_cache_kfree(cache, object);
 }
 
-kmem_cache* kmem_cache_create_sl(kmem_cache* cache, const size_t size) {
+kmem_cache* kmem_cache_create_sl(kmem_cache* cache, const size_t object_size) {
     /* initialise a kmem_cache by:
      * calculating object_align, objects_per_slab,
      * and then assigning a slab_order based on objects_per_slab
@@ -606,12 +625,12 @@ kmem_cache* kmem_cache_create_sl(kmem_cache* cache, const size_t size) {
      * and therefore requires spinlocks
      */
     spinlock_acquire(&slab_lock);
-    cache->object_size = size;
-    cache->object_align = calc_object_align(size);
+    cache->object_size = object_size;
+    cache->object_align = calc_object_align(object_size);
     if (cache->object_align == (uint32_t)-1)
         return NULL;
 
-    const uint32_t slab_order = calc_slab_order(size);
+    const uint32_t slab_order = calc_slab_order(object_size);
     cache->slab_order = slab_order;
 
     const uint64_t objects_per_slab = calc_objects_per_slab(cache);
@@ -640,9 +659,9 @@ kmem_cache* kmem_cache_create_sl(kmem_cache* cache, const size_t size) {
  * one may call slab_kfree/alloc or buddy_kfree/alloc functions manually
  * also possible to call kmem_cache_alloc/free functions
  * TODO:
- * 1. separate pmm_lock to buddy_lock and slab_lock
- * 2. let slab_kalloc and slab_kfree look in new caches for allocating and
- * freeing
+ * 1. let slab_kalloc and slab_kfree look in new caches for allocating and
+ * freeing, somehting like having slab_kalloc(size), slab_kalloc(kmem_cache)
+ * to decide on what to allcoate from
  */
 
 void __init_phys_kmalloc() {
@@ -694,7 +713,7 @@ void* get_zeroed_phys_page(void) {
     if (ptr == NULL)
         return NULL;
 
-    memset_lb(ptr, 0, PAGE_SIZE);
+    memset_lb(directmap_p2v(ptr), 0, PAGE_SIZE);
     return ptr;
 }
 

@@ -56,6 +56,22 @@ extern mmap_entry_t mmap_bios_entries[];
 
 static uint64_t s_fb_virt = 0;
 
+/* The bootloader leaves the VBE handoff struct at physical 0x7100. That address
+ * only survives while the low identity map is up, and kmain() tears that down
+ * in unmap_boot_memory(), so every printing path would fault the moment it
+ * tried to re-read the mode info. Keep our own copy in the kernel image, which
+ * is mapped for the whole life of the kernel. */
+static boot_vbe_handoff s_vbe_info __attribute__((section(".data"))) = {0};
+
+void __init_vbe_handoff(void) {
+    // must run while the bootloader's identity map still covers 0x7100
+    s_vbe_info = *(const boot_vbe_handoff*)vbe_handoff_address;
+}
+
+static inline const boot_vbe_handoff* vbe_info(void) {
+    return &s_vbe_info;
+}
+
 void vesa_set_fb_virtual(uint64_t virtual_fb_base) {
     s_fb_virt = virtual_fb_base;
 }
@@ -93,8 +109,7 @@ static const char* mmap_type_str(uint32_t type) {
 }
 
 void vbe_blue_screen(void) {
-    const boot_vbe_handoff* vbe_md =
-        (const boot_vbe_handoff*)vbe_handoff_address;
+    const boot_vbe_handoff* vbe_md = vbe_info();
     volatile uint32_t* fb = get_fb(vbe_md);
     const uint32_t pitch_in_pixels = vbe_md->pitch / 4;
     for (uint32_t y = 0; y < vbe_md->height_px; y++) {
@@ -105,8 +120,7 @@ void vbe_blue_screen(void) {
 }
 
 void vbe_black_screen(void) {
-    const boot_vbe_handoff* vbe_md =
-        (const boot_vbe_handoff*)vbe_handoff_address;
+    const boot_vbe_handoff* vbe_md = vbe_info();
     volatile uint32_t* fb = get_fb(vbe_md);
     const uint32_t pitch_in_pixels = vbe_md->pitch / 4;
     for (uint32_t y = 0; y < vbe_md->height_px; y++) {
@@ -117,8 +131,7 @@ void vbe_black_screen(void) {
 }
 
 void vesa_clear_lower_half(void) {
-    const boot_vbe_handoff* vbe_md =
-        (const boot_vbe_handoff*)vbe_handoff_address;
+    const boot_vbe_handoff* vbe_md = vbe_info();
     volatile uint32_t* fb = get_fb(vbe_md);
     const uint32_t pitch_in_pixels = vbe_md->pitch / 4;
     const uint32_t half_row_px =
@@ -172,8 +185,7 @@ void vesa_print_mmap(int row, const int col) {
 
 // 1280x720 with 8x16 font gives 160 columns (1280/8) and 45 rows (720/16)
 void vesa_nt_println(const char* nt_s, const int row, const int col) {
-    const boot_vbe_handoff* vbe_md =
-        (const boot_vbe_handoff*)vbe_handoff_address;
+    const boot_vbe_handoff* vbe_md = vbe_info();
     volatile uint32_t* fb = get_fb(vbe_md);
     const uint32_t pitch_in_pixels = vbe_md->pitch / 4;
     const uint32_t charheight = psf_charheight();

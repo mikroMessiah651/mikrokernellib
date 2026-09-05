@@ -3,9 +3,6 @@
 #include "include/phys_kmalloc.h"
 #include <stddef.h>
 
-void _init_dm_pmm();
-// init direct mapped pmm
-
 void* mapped_phys_kmalloc(size_t size, ALLOC_FLAG flg);
 bool mapped_phys_kfree(const void* ptr, size_t size, ALLOC_FLAG flg);
 

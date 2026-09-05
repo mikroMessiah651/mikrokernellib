@@ -1,8 +1,5 @@
-//
-// Created by eyalka on 3/28/26.
-//
-
 #pragma once
+
 #include <stdint.h>
 
 #define VESA_LAST_ROW 83
@@ -24,6 +21,10 @@ typedef struct {
     uint16_t height_px;
     uint8_t bpp;
 } __attribute__((packed)) boot_vbe_handoff;
+
+void __init_vbe_handoff(void);
+// snapshot the bootloader handoff struct out of low memory; call before the
+// low identity map is torn down
 
 void vesa_set_fb_virtual(uint64_t virtual_fb_base);
 void vbe_blue_screen(void);

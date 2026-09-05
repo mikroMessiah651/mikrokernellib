@@ -8,6 +8,8 @@ extern mmap_entry_0xe820 mmap_bios_entries[];
 
 static char pmap_buf[PAGE_SIZE / 2] = {0};
 
+// again, memcpy is defined in a header and implemented here, why does CLion yell at me?
+// ReSharper disable once CppUseInternalLinkage
 void* memcpy(void* dest, const void* src, size_t n) {
     // Cast void pointers to unsigned char pointers for byte-level access
     unsigned char* d = (unsigned char*)dest;
@@ -17,8 +19,6 @@ void* memcpy(void* dest, const void* src, size_t n) {
     while (n--) {
         *d++ = *s++;
     }
-
-    // Return the original destination pointer per standard convention
     return dest;
 }
 

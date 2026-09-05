@@ -1,4 +1,5 @@
 #include "include/kstrings.h"
+#include <stddef.h>
 
 size_t kstring_length(const char* s) {
     if (!s)
@@ -33,4 +34,26 @@ int kstring_strcmp(const char* s1, const char* s2) {
         s2++;
     }
     return (unsigned char)*s1 - (unsigned char)*s2;
+}
+
+#include <stdint.h>
+void* memset(void* ptr, int value, size_t num) {
+    if (num == 0)
+        return ptr;
+
+    __asm__ __volatile__(
+        /*
+         * On modern x86-64 CPUs (Intel Ivy Bridge+ and AMD Zen+),
+         * rep stosb triggers ERMS
+         * The hardware automatically checks alignment, performs
+         * cache-line zeroing, and sets memory faster than any
+         * manual 64-bit or 128-bit unrolled C loop.
+         */
+        "rep stosb"
+        : "+D"(ptr), "+c"(num)      // Outputs/Inputs: Destination (%rdi), Count (%rcx)
+        : "a"((unsigned char)value) // Input: Value byte stored in %al
+        : "memory"                  // Clobber list: Tells compiler memory has changed
+    );
+
+    return ptr;
 }

@@ -5,6 +5,7 @@
 
 #include "include/virt_kmalloc.h"
  #include "include/mikroKernellib-common.h"
+#include "include/mmu.h"
 #include "include/phys_kmalloc.h"
 #include "include/spinlocks.h"
 #include <stddef.h>
@@ -30,9 +31,9 @@ static inline void rb_remove_vac(vac_t* v) {
 int vac_cmp(struct rb_node* a, struct rb_node* b) {
     vac_t* a_vac = container_of(a, struct vac, node);
     vac_t* b_vac = container_of(b, struct vac, node);
-    if (a_vac->addr > b_vac->addr)
+    if (directmap_p2v(a_vac)->addr > directmap_p2v(b_vac)->addr)
         return 1;
-    else if (a_vac->addr < b_vac->addr)
+    else if (directmap_p2v(a_vac)->addr < directmap_p2v(b_vac)->addr)
         return -1;
     return 0;
 }
@@ -44,13 +45,13 @@ static vac_t* rb_successor_vac(struct rb_node** root, const uint64_t addr) {
     struct rb_node* successor = NULL;
     while (current != NULL) {
         vac_t* v = container_of(current, vac_t, node);
-        if (addr < v->addr) {
+        if (addr < directmap_p2v(v)->addr) {
             // go left
             successor = current;
-            current = current->left;
+            current = directmap_p2v(current)->left;
         } else {
             // go right
-            current = current->right;
+            current = directmap_p2v(current)->right;
         }
     }
     return successor ? container_of(successor, vac_t, node) : NULL;
@@ -62,13 +63,13 @@ static vac_t* rb_predeccessor_vac(struct rb_node** root, const uint64_t addr) {
     struct rb_node* predecessor = NULL;
     while (current != NULL) {
         vac_t* v = container_of(current, vac_t, node);
-        if (addr > v->addr) {
+        if (addr > directmap_p2v(v)->addr) {
             // go right
             predecessor = current;
-            current = current->right;
+            current = directmap_p2v(current)->right;
         } else {
             // go left
-            current = current->left;
+            current = directmap_p2v(current)->left;
         }
     }
     return predecessor ? container_of(predecessor, vac_t, node) : NULL;
@@ -80,10 +81,10 @@ static vac_t* rb_find_vac(struct rb_node** root, const uint64_t addr) {
     struct rb_node* current = *root;
     while (current != NULL) {
         vac_t* v = container_of(current, vac_t, node);
-        if (addr < v->addr) {
-            current = current->left;
-        } else if (addr >= v->end) {
-            current = current->right;
+        if (addr < directmap_p2v(v)->addr) {
+            current = directmap_p2v(current)->left;
+        } else if (addr >= directmap_p2v(v)->end) {
+            current = directmap_p2v(current)->right;
         } else {
             return v;
         }

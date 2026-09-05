@@ -1,8 +1,16 @@
 /* Eyal Kaghanovich
  * red-black tree VMA search
+ *
+ * Every rb_node pointer stored in a tree is whatever the allocator handed out.
+ * For the kernel VMA tree that is a slab object, i.e. a PHYSICAL address, which
+ * stops being directly dereferenceable once __init_mmu() swaps CR3. So every
+ * dereference goes through directmap_p2v() while the stored links stay exactly
+ * as they were. The translation is kind-aware, so a node that already lives at
+ * a virtual address passes through untouched.
  */
 
 #include "include/rb_tree.h"
+#include "include/mmu.h"
 #include "include/vesa_graphics_lib.h"
 #include <stdbool.h>
 #include <stdint.h>
@@ -18,57 +26,57 @@ void rb_print_tree(struct rb_node** root, int* row, const int col,
     // tree rotated 90 degrees clockwise: deeper nodes indent further right,
     // each node gets its own row. col tracks depth, row advances across the
     // whole tree.
-    rb_print_tree(&x->right, row, col + 4, addr_of_node);
+    rb_print_tree(&directmap_p2v(x)->right, row, col + 4, addr_of_node);
     vesa_print_virt_addr(addr_of_node(x), *row, col);
     (*row)++;
-    rb_print_tree(&x->left, row, col + 4, addr_of_node);
+    rb_print_tree(&directmap_p2v(x)->left, row, col + 4, addr_of_node);
 }
 
 static void rb_rotate_left(struct rb_node** root, struct rb_node* node) {
-    struct rb_node* tmp = node->right;
-    node->right = tmp->left;
-    if (tmp->left != NULL)
-        node->right->parent = node;
+    struct rb_node* tmp = directmap_p2v(node)->right;
+    directmap_p2v(node)->right = directmap_p2v(tmp)->left;
+    if (directmap_p2v(tmp)->left != NULL)
+        directmap_p2v(directmap_p2v(node)->right)->parent = node;
 
-    tmp->parent = node->parent;
-    if (node->parent == NULL) {
+    directmap_p2v(tmp)->parent = directmap_p2v(node)->parent;
+    if (directmap_p2v(node)->parent == NULL) {
         // x was root
         // set tmp as new root
         *root = tmp;
-    } else if (node == node->parent->left) {
+    } else if (node == directmap_p2v(directmap_p2v(node)->parent)->left) {
         // x was a left child
-        node->parent->left = tmp;
+        directmap_p2v(directmap_p2v(node)->parent)->left = tmp;
     } else {
         // x was a right child
-        node->parent->right = tmp;
+        directmap_p2v(directmap_p2v(node)->parent)->right = tmp;
     }
 
-    tmp->left = node;
-    node->parent = tmp;
+    directmap_p2v(tmp)->left = node;
+    directmap_p2v(node)->parent = tmp;
 }
 
 static void rb_rotate_right(struct rb_node** root,
                             struct rb_node* node) {
-    struct rb_node* tmp = node->left;
-    node->left = tmp->right;
-    if (tmp->right != NULL)
-        node->left->parent = node;
+    struct rb_node* tmp = directmap_p2v(node)->left;
+    directmap_p2v(node)->left = directmap_p2v(tmp)->right;
+    if (directmap_p2v(tmp)->right != NULL)
+        directmap_p2v(directmap_p2v(node)->left)->parent = node;
 
-    tmp->parent = node->parent;
-    if (node->parent == NULL) {
+    directmap_p2v(tmp)->parent = directmap_p2v(node)->parent;
+    if (directmap_p2v(node)->parent == NULL) {
         // x was root
         // set tmp as new root
         *root = tmp;
-    } else if (node == node->parent->right) {
+    } else if (node == directmap_p2v(directmap_p2v(node)->parent)->right) {
         // x was a right child
-        node->parent->right = tmp;
+        directmap_p2v(directmap_p2v(node)->parent)->right = tmp;
     } else {
         // x was a left child
-        node->parent->left = tmp;
+        directmap_p2v(directmap_p2v(node)->parent)->left = tmp;
     }
 
-    tmp->right = node;
-    node->parent = tmp;
+    directmap_p2v(tmp)->right = node;
+    directmap_p2v(node)->parent = tmp;
 }
 
 static struct rb_node* rb_find_exact(struct rb_node** root, struct rb_node* key,
@@ -78,9 +86,9 @@ static struct rb_node* rb_find_exact(struct rb_node** root, struct rb_node* key,
     while (current != NULL) {
         const int result = cmp(key, current);
         if (result < 0) {
-            current = current->left;
+            current = directmap_p2v(current)->left;
         } else if (result > 0) {
-            current = current->right;
+            current = directmap_p2v(current)->right;
         } else {
             return current;
         }
@@ -89,83 +97,83 @@ static struct rb_node* rb_find_exact(struct rb_node** root, struct rb_node* key,
 }
 
 static struct rb_node* rb_minimum(struct rb_node* node) {
-    while (node->left != NULL) {
-        node = node->left;
+    while (directmap_p2v(node)->left != NULL) {
+        node = directmap_p2v(node)->left;
     }
     return node;
 }
 
 static inline void rb_transplant(struct rb_node** root, const struct rb_node* node,
                                  struct rb_node* replacement) {
-    if (node->parent == NULL) {
+    if (directmap_p2v(node)->parent == NULL) {
         *root = replacement;
-    } else if (node == node->parent->left) {
-        node->parent->left = replacement;
+    } else if (node == directmap_p2v(directmap_p2v(node)->parent)->left) {
+        directmap_p2v(directmap_p2v(node)->parent)->left = replacement;
     } else {
-        node->parent->right = replacement;
+        directmap_p2v(directmap_p2v(node)->parent)->right = replacement;
     }
     if (replacement != NULL) {
-        replacement->parent = node->parent;
+        directmap_p2v(replacement)->parent = directmap_p2v(node)->parent;
     }
 }
 
 static void rb_insert_fixup(struct rb_node** root, struct rb_node* x) {
-    while (x->parent != NULL && x->parent->color == RB_RED) {
-        if (x->parent->parent == NULL)
+    while (directmap_p2v(x)->parent != NULL && directmap_p2v(directmap_p2v(x)->parent)->color == RB_RED) {
+        if (directmap_p2v(directmap_p2v(x)->parent)->parent == NULL)
             break;
 
-        if (x->parent == x->parent->parent->left) {
-            struct rb_node* uncle = x->parent->parent->right;
-            if (uncle != NULL && uncle->color == RB_RED) {
+        if (directmap_p2v(x)->parent == directmap_p2v(directmap_p2v(directmap_p2v(x)->parent)->parent)->left) {
+            struct rb_node* uncle = directmap_p2v(directmap_p2v(directmap_p2v(x)->parent)->parent)->right;
+            if (uncle != NULL && directmap_p2v(uncle)->color == RB_RED) {
                 // case 1: uncle is red
-                x->parent->color = RB_BLACK;
-                uncle->color = RB_BLACK;
+                directmap_p2v(directmap_p2v(x)->parent)->color = RB_BLACK;
+                directmap_p2v(uncle)->color = RB_BLACK;
 
-                x->parent->parent->color = RB_RED;
-                x = x->parent->parent;
+                directmap_p2v(directmap_p2v(directmap_p2v(x)->parent)->parent)->color = RB_RED;
+                x = directmap_p2v(directmap_p2v(x)->parent)->parent;
             } else {
-                if (x == x->parent->right) {
+                if (x == directmap_p2v(directmap_p2v(x)->parent)->right) {
                     // case 2: node is a right child
-                    x = x->parent;
+                    x = directmap_p2v(x)->parent;
                     rb_rotate_left(root, x);
                 }
                 // case 3: node is a left child
-                x->parent->color = RB_BLACK;
-                x->parent->parent->color = RB_RED;
-                rb_rotate_right(root, x->parent->parent);
+                directmap_p2v(directmap_p2v(x)->parent)->color = RB_BLACK;
+                directmap_p2v(directmap_p2v(directmap_p2v(x)->parent)->parent)->color = RB_RED;
+                rb_rotate_right(root, directmap_p2v(directmap_p2v(x)->parent)->parent);
             }
         } else {
-            // node->parent == node->parent->parent->right
+            // directmap_p2v(node)->parent == directmap_p2v(directmap_p2v(directmap_p2v(node)->parent)->parent)->right
             // node's parent is a right child
-            struct rb_node* uncle = x->parent->parent->left;
-            if (uncle != NULL && uncle->color == RB_RED) {
+            struct rb_node* uncle = directmap_p2v(directmap_p2v(directmap_p2v(x)->parent)->parent)->left;
+            if (uncle != NULL && directmap_p2v(uncle)->color == RB_RED) {
                 // uncle is red
-                x->parent->color = RB_BLACK;
-                uncle->color = RB_BLACK;
+                directmap_p2v(directmap_p2v(x)->parent)->color = RB_BLACK;
+                directmap_p2v(uncle)->color = RB_BLACK;
 
-                x->parent->parent->color = RB_RED;
-                x = x->parent->parent;
+                directmap_p2v(directmap_p2v(directmap_p2v(x)->parent)->parent)->color = RB_RED;
+                x = directmap_p2v(directmap_p2v(x)->parent)->parent;
             } else {
-                if (x == x->parent->left) {
+                if (x == directmap_p2v(directmap_p2v(x)->parent)->left) {
                     // node is a left child (zig-zag mirror)
-                    x = x->parent;
+                    x = directmap_p2v(x)->parent;
                     rb_rotate_right(root, x);
                 }
                 // node is a right child
-                x->parent->color = RB_BLACK;
-                x->parent->parent->color = RB_RED;
-                rb_rotate_left(root, x->parent->parent);
+                directmap_p2v(directmap_p2v(x)->parent)->color = RB_BLACK;
+                directmap_p2v(directmap_p2v(directmap_p2v(x)->parent)->parent)->color = RB_RED;
+                rb_rotate_left(root, directmap_p2v(directmap_p2v(x)->parent)->parent);
             }
         }
     }
     struct rb_node* T = *root;
-    T->color = RB_BLACK;
+    directmap_p2v(T)->color = RB_BLACK;
 }
 
 struct rb_node* rb_insert(struct rb_node** root, struct rb_node* node,
                           int (*cmp)(struct rb_node*, struct rb_node*)) {
-    node->left = NULL;
-    node->right = NULL;
+    directmap_p2v(node)->left = NULL;
+    directmap_p2v(node)->right = NULL;
 
     // walk BST to find place for node
     struct rb_node* current = *root;
@@ -176,10 +184,10 @@ struct rb_node* rb_insert(struct rb_node** root, struct rb_node* node,
         const int result = cmp(node, current);
         if (result < 0) {
             // node.field < current.field
-            current = current->left;
+            current = directmap_p2v(current)->left;
         } else if (result > 0) {
             // node.field > current.field
-            current = current->right;
+            current = directmap_p2v(current)->right;
         } else {
             // duplicate
             return NULL;
@@ -187,23 +195,23 @@ struct rb_node* rb_insert(struct rb_node** root, struct rb_node* node,
     }
     if (parent == NULL) {
         *root = node;
-        node->parent = NULL;
-        node->color = RB_BLACK;
+        directmap_p2v(node)->parent = NULL;
+        directmap_p2v(node)->color = RB_BLACK;
         return node;
     }
 
     const int result = cmp(node, parent);
     if (result < 0) {
-        parent->left = node;
+        directmap_p2v(parent)->left = node;
     } else if (result > 0) {
-        parent->right = node;
+        directmap_p2v(parent)->right = node;
     } else {
         return NULL;
     }
 
     // set color and parent
-    node->parent = parent;
-    node->color = RB_RED;
+    directmap_p2v(node)->parent = parent;
+    directmap_p2v(node)->color = RB_RED;
 
     // fix rb-tree structure violations
     rb_insert_fixup(root, node);
@@ -217,80 +225,80 @@ struct rb_node* rb_insert(struct rb_node** root, struct rb_node* node,
 
 static void rb_delete_fixup(struct rb_node** root, struct rb_node* x,
                             struct rb_node* x_parent) {
-    while (x != *root && (x == NULL || x->color == RB_BLACK)) {
-        if (x == x_parent->left) {
-            struct rb_node* sibling = x_parent->right;
+    while (x != *root && (x == NULL || directmap_p2v(x)->color == RB_BLACK)) {
+        if (x == directmap_p2v(x_parent)->left) {
+            struct rb_node* sibling = directmap_p2v(x_parent)->right;
 
             // case 1: sibling is red
-            if (sibling != NULL && sibling->color == RB_RED) {
-                sibling->color = RB_BLACK;
-                x_parent->color = RB_RED;
+            if (sibling != NULL && directmap_p2v(sibling)->color == RB_RED) {
+                directmap_p2v(sibling)->color = RB_BLACK;
+                directmap_p2v(x_parent)->color = RB_RED;
                 rb_rotate_left(root, x_parent);
-                sibling = x_parent->right;
+                sibling = directmap_p2v(x_parent)->right;
             }
 
             // case 2: sibling is black, both sibling's children are black
-            if ((sibling->left == NULL || sibling->left->color == RB_BLACK) &&
-                (sibling->right == NULL || sibling->right->color == RB_BLACK)) {
-                sibling->color = RB_RED;
+            if ((directmap_p2v(sibling)->left == NULL || directmap_p2v(directmap_p2v(sibling)->left)->color == RB_BLACK) &&
+                (directmap_p2v(sibling)->right == NULL || directmap_p2v(directmap_p2v(sibling)->right)->color == RB_BLACK)) {
+                directmap_p2v(sibling)->color = RB_RED;
                 x = x_parent;
-                x_parent = x->parent;
+                x_parent = directmap_p2v(x)->parent;
             } else {
                 // case 3: sibling is black, sibling's right child is black
-                if (sibling->right == NULL ||
-                    sibling->right->color == RB_BLACK) {
-                    if (sibling->left != NULL)
-                        sibling->left->color = RB_BLACK;
-                    sibling->color = RB_RED;
+                if (directmap_p2v(sibling)->right == NULL ||
+                    directmap_p2v(directmap_p2v(sibling)->right)->color == RB_BLACK) {
+                    if (directmap_p2v(sibling)->left != NULL)
+                        directmap_p2v(directmap_p2v(sibling)->left)->color = RB_BLACK;
+                    directmap_p2v(sibling)->color = RB_RED;
                     rb_rotate_right(root, sibling);
-                    sibling = x_parent->right;
+                    sibling = directmap_p2v(x_parent)->right;
                 }
                 // case 4: sibling is black, sibling's right child is red
-                sibling->color = x_parent->color;
-                x_parent->color = RB_BLACK;
-                if (sibling->right != NULL)
-                    sibling->right->color = RB_BLACK;
+                directmap_p2v(sibling)->color = directmap_p2v(x_parent)->color;
+                directmap_p2v(x_parent)->color = RB_BLACK;
+                if (directmap_p2v(sibling)->right != NULL)
+                    directmap_p2v(directmap_p2v(sibling)->right)->color = RB_BLACK;
                 rb_rotate_left(root, x_parent);
                 x = *root;
             }
         } else {
-            struct rb_node* sibling = x_parent->left;
+            struct rb_node* sibling = directmap_p2v(x_parent)->left;
 
             // case 1: sibling is red
-            if (sibling != NULL && sibling->color == RB_RED) {
-                sibling->color = RB_BLACK;
-                x_parent->color = RB_RED;
+            if (sibling != NULL && directmap_p2v(sibling)->color == RB_RED) {
+                directmap_p2v(sibling)->color = RB_BLACK;
+                directmap_p2v(x_parent)->color = RB_RED;
                 rb_rotate_right(root, x_parent);
-                sibling = x_parent->left;
+                sibling = directmap_p2v(x_parent)->left;
             }
 
             // case 2: sibling is black, both sibling's children are black
-            if ((sibling->right == NULL || sibling->right->color == RB_BLACK) &&
-                (sibling->left == NULL || sibling->left->color == RB_BLACK)) {
-                sibling->color = RB_RED;
+            if ((directmap_p2v(sibling)->right == NULL || directmap_p2v(directmap_p2v(sibling)->right)->color == RB_BLACK) &&
+                (directmap_p2v(sibling)->left == NULL || directmap_p2v(directmap_p2v(sibling)->left)->color == RB_BLACK)) {
+                directmap_p2v(sibling)->color = RB_RED;
                 x = x_parent;
-                x_parent = x->parent;
+                x_parent = directmap_p2v(x)->parent;
             } else {
                 // case 3: sibling is black, sibling's left child is black
-                if (sibling->left == NULL || sibling->left->color == RB_BLACK) {
-                    if (sibling->right != NULL)
-                        sibling->right->color = RB_BLACK;
-                    sibling->color = RB_RED;
+                if (directmap_p2v(sibling)->left == NULL || directmap_p2v(directmap_p2v(sibling)->left)->color == RB_BLACK) {
+                    if (directmap_p2v(sibling)->right != NULL)
+                        directmap_p2v(directmap_p2v(sibling)->right)->color = RB_BLACK;
+                    directmap_p2v(sibling)->color = RB_RED;
                     rb_rotate_left(root, sibling);
-                    sibling = x_parent->left;
+                    sibling = directmap_p2v(x_parent)->left;
                 }
                 // case 4: sibling is black, sibling's left child is red
-                sibling->color = x_parent->color;
-                x_parent->color = RB_BLACK;
-                if (sibling->left != NULL)
-                    sibling->left->color = RB_BLACK;
+                directmap_p2v(sibling)->color = directmap_p2v(x_parent)->color;
+                directmap_p2v(x_parent)->color = RB_BLACK;
+                if (directmap_p2v(sibling)->left != NULL)
+                    directmap_p2v(directmap_p2v(sibling)->left)->color = RB_BLACK;
                 rb_rotate_right(root, x_parent);
                 x = *root;
             }
         }
     }
     if (x != NULL)
-        x->color = RB_BLACK;
+        directmap_p2v(x)->color = RB_BLACK;
 }
 
 bool rb_delete(struct rb_node** root, struct rb_node* key,
@@ -303,41 +311,41 @@ bool rb_delete(struct rb_node** root, struct rb_node* key,
         return false;
 
     struct rb_node* y = node;
-    uint8_t y_original_color = y->color;
+    uint8_t y_original_color = directmap_p2v(y)->color;
 
     // case 1, node has no left child
-    if (node->left == NULL) {
-        x = node->right;
-        x_parent = node->parent;
-        rb_transplant(root, node, node->right);
-    } else if (node->right == NULL) {
+    if (directmap_p2v(node)->left == NULL) {
+        x = directmap_p2v(node)->right;
+        x_parent = directmap_p2v(node)->parent;
+        rb_transplant(root, node, directmap_p2v(node)->right);
+    } else if (directmap_p2v(node)->right == NULL) {
         // case 2, node has no right child
-        x = node->left;
-        x_parent = node->parent;
-        rb_transplant(root, node, node->left);
+        x = directmap_p2v(node)->left;
+        x_parent = directmap_p2v(node)->parent;
+        rb_transplant(root, node, directmap_p2v(node)->left);
     } else {
         // node has two children
         // find inorder successor
         // leftmost node in right subtree
-        y = rb_minimum(node->right);
-        y_original_color = y->color;
-        x = y->right;
+        y = rb_minimum(directmap_p2v(node)->right);
+        y_original_color = directmap_p2v(y)->color;
+        x = directmap_p2v(y)->right;
 
-        if (y->parent == node) {
+        if (directmap_p2v(y)->parent == node) {
             x_parent = y;
             if (x != NULL)
-                x->parent = y;
+                directmap_p2v(x)->parent = y;
         } else {
-            rb_transplant(root, y, y->right);
-            y->right = node->right;
-            y->right->parent = y;
-            x_parent = y->parent;
+            rb_transplant(root, y, directmap_p2v(y)->right);
+            directmap_p2v(y)->right = directmap_p2v(node)->right;
+            directmap_p2v(directmap_p2v(y)->right)->parent = y;
+            x_parent = directmap_p2v(y)->parent;
         }
 
         rb_transplant(root, node, y);
-        y->left = node->left;
-        y->left->parent = y;
-        y->color = node->color;
+        directmap_p2v(y)->left = directmap_p2v(node)->left;
+        directmap_p2v(directmap_p2v(y)->left)->parent = y;
+        directmap_p2v(y)->color = directmap_p2v(node)->color;
     }
 
     if (y_original_color == RB_BLACK) {
@@ -357,11 +365,11 @@ void rb_traverse_inorder(struct rb_node* root,
         return;
 
     // left subtree
-    rb_traverse_inorder(root->left, callback);
+    rb_traverse_inorder(directmap_p2v(root)->left, callback);
 
     // current node
     callback(root);
 
     // right subtree
-    rb_traverse_inorder(root->right, callback);
+    rb_traverse_inorder(directmap_p2v(root)->right, callback);
 }
